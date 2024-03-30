@@ -8,12 +8,12 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
         # YouTube API key and IRC server details
         self.api_key = "PUT YOUR GOOGLE API KEY HERE"
-        self.server = "irc.epiknet.org"
+        self.server = "labynet.fr" # set your prefered irc server 
         self.port = 6667
-        self.channel = "#zone-libre"
+        self.channel = "#test" # set your prefered channel
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
-        self.username = "rosalie"
+        self.username = "rosalie" # set your prefered nick name 
         self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
         irc.bot.SingleServerIRCBot.__init__(self, [(self.server, self.port)], self.nickname, self.realname)
