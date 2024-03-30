@@ -114,5 +114,5 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                     time.sleep(0.5)
 
 if __name__ == "__main__":
-    bot = ChatGPTBot("#labynet", "zozo", "labynet.fr")
+    bot = ChatGPTBot("#your_channel", "the_bot_name", "irc.sample.net")
     bot.start()
