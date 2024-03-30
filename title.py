@@ -3,10 +3,10 @@ import subprocess
 import re
 
 # Paramètres pour le serveur IRC et le bot
-SERVER = "labynet.fr"
+SERVER = "irc.sample.net"
 PORT = 6667
-CHANNEL = "#labynet"
-NICK = "title"
+CHANNEL = "#your_channel"
+NICK = "bot_name"
 
 # Connexion au serveur IRC
 irc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
