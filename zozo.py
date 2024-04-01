@@ -1,3 +1,4 @@
+# installez les biobliotheques utilisée dans ce script : pip install irc openai
 import irc.bot
 import irc.strings
 from irc.client import ip_numstr_to_quad, ip_quad_to_numstr
@@ -7,13 +8,23 @@ import json
 import os
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
-    def __init__(self, channel, nickname, server, port=6667):
+    def __init__(self, config_file):
+        with open(config_file, "r") as f:
+            config = json.load(f)
+
+        channel = config["channel"]
+        nickname = config["nickname"]
+        server = config["server"]
+        port = config["port"]
+        api_key = config["api_key"]
+        max_num_line = config["max_num_line"]
+
         irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
         self.channel = channel
-        self.api_key = "PUT YOUR OPENAI API KEY HERE "
+        self.api_key = api_key
         openai.api_key = self.api_key
         self.user_contexts = {}
-        self.max_num_line = 50
+        self.max_num_line = max_num_line
         
     def on_welcome(self, connection, event):
         connection.join(self.channel)
@@ -114,5 +125,5 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                     time.sleep(0.5)
 
 if __name__ == "__main__":
-    bot = ChatGPTBot("#your_channel", "the_bot_name", "irc.sample.net")
+    bot = ChatGPTBot("zozo.json")
     bot.start()
