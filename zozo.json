@@ -3,6 +3,6 @@
   "nickname": "zozo",
   "server": "labynet.fr",
   "port": 6667,
-  "api_key": "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",
+  "api_key": "PUT YOUR OPEN AI API KEY HERE",
   "max_num_line": 50
 }
