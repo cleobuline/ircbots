@@ -1,4 +1,3 @@
-# installez les biobliotheques utilisée dans ce script : pip install irc openai
 import irc.bot
 import irc.strings
 from irc.client import ip_numstr_to_quad, ip_quad_to_numstr
@@ -37,10 +36,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             if message.strip().lower().startswith("raz"):
-                if (self.channel, user) in self.user_contexts:
-                    self.user_contexts[(self.channel, user)] = {user: ["Bonjour"]}
-                else:
-                    self.user_contexts[(self.channel, user)] = {user: ["Bonjour"]}
+                self.reset_user_context(user)
                 return
             elif message.strip().lower().startswith("save"):
                 self.save_user_context(user)
@@ -49,16 +45,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.load_user_context(user)
                 return
 
-            if (self.channel, user) not in self.user_contexts:
-                self.user_contexts[(self.channel, user)] = {user: []}
-            if user not in self.user_contexts[(self.channel, user)]:
-                self.user_contexts[(self.channel, user)][user] = []
-
-            self.user_contexts[(self.channel, user)][user].append(message +"\n")
-
-            if len(self.user_contexts[(self.channel, user)][user]) > self.max_num_line:
-                context_list = self.user_contexts[(self.channel, user)][user]
-                self.user_contexts[(self.channel, user)][user] = context_list[1:]
+            self.update_context(user, message)
 
             try:
                 response = self.generate_response(user, message, self.channel)
@@ -67,6 +54,18 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 print(f"Erreur OpenAI: {e}")
 
             self.send_message_in_chunks(connection, self.channel, response)
+
+    def update_context(self, user, message):
+        if (self.channel, user) not in self.user_contexts:
+            self.user_contexts[(self.channel, user)] = {user: []}
+        if user not in self.user_contexts[(self.channel, user)]:
+            self.user_contexts[(self.channel, user)][user] = []
+
+        self.user_contexts[(self.channel, user)][user].append(message +"\n")
+
+        if len(self.user_contexts[(self.channel, user)][user]) > self.max_num_line:
+            context_list = self.user_contexts[(self.channel, user)][user]
+            self.user_contexts[(self.channel, user)][user] = context_list[1:]
 
     def generate_response(self, user, message, channel):
         prompt_text = "répond  à la dernière ligne du message en tenant compte du contexte \n".join(self.user_contexts[(channel, user)][user])
@@ -79,6 +78,12 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
 
         generated_text = response.choices[0].message.content.strip()
         return generated_text
+
+    def reset_user_context(self, user):
+        if (self.channel, user) in self.user_contexts:
+            self.user_contexts[(self.channel, user)] = {user: ["Bonjour"]}
+        else:
+            self.user_contexts[(self.channel, user)] = {user: ["Bonjour"]}
 
     def save_user_context(self, user):
         if (self.channel, user) in self.user_contexts and user in self.user_contexts[(self.channel, user)]:
