@@ -39,10 +39,23 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.reset_user_context(user)
                 return
             elif message.strip().lower().startswith("save"):
-                self.save_user_context(user)
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.save_user_context(user, title)
+                else:
+                    connection.privmsg(self.channel, "Veuillez spécifier un titre pour la sauvegarde.")
                 return
             elif message.strip().lower().startswith("load"):
-                self.load_user_context(user)
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.load_user_context(user, title)
+                else:
+                    connection.privmsg(self.channel, "Veuillez spécifier un titre pour le chargement.")
+                return
+            elif message.strip().lower().startswith("files"):
+                self.list_user_files(user)
                 return
 
             self.update_context(user, message)
@@ -85,18 +98,18 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         else:
             self.user_contexts[(self.channel, user)] = {user: ["Bonjour"]}
 
-    def save_user_context(self, user):
+    def save_user_context(self, user, title):
         if (self.channel, user) in self.user_contexts and user in self.user_contexts[(self.channel, user)]:
             context = self.user_contexts[(self.channel, user)][user]
-            filename = f"{user}_context.json"
+            filename = f"{user}_{title}_context.json"
             with open(filename, "w") as file:
                 json.dump(context, file)
-            print(f"Contexte utilisateur de {user} sauvegardé dans {filename}.")
+            print(f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
         else:
             print(f"Aucun contexte à sauvegarder pour {user}.")
 
-    def load_user_context(self, user):
-        filename = f"{user}_context.json"
+    def load_user_context(self, user, title):
+        filename = f"{user}_{title}_context.json"
         if os.path.exists(filename):
             with open(filename, "r") as file:
                 context = json.load(file)
@@ -104,9 +117,18 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.user_contexts[(self.channel, user)] = {user: context}
             else:
                 self.user_contexts[(self.channel, user)][user] = context
-            print(f"Contexte utilisateur de {user} chargé depuis {filename}.")
+            self.connection.privmsg(self.channel, f"Contexte utilisateur de {user} avec le titre {title} chargé depuis {filename}.")
         else:
-            print(f"Aucun fichier de contexte trouvé pour {user}.")
+            self.connection.privmsg(self.channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
+
+    def list_user_files(self, user):
+        files = [filename.split("_")[1].replace("_context.json", "") for filename in os.listdir() if filename.startswith(user) and filename.endswith("_context.json")]
+        if files:
+            self.connection.privmsg(self.channel, f"Fichiers de contexte disponibles pour {user} :")
+            for file in files:
+                self.connection.privmsg(self.channel, f"- {file}")
+        else:
+            self.connection.privmsg(self.channel, f"Aucun fichier de contexte disponible pour {user}.")
 
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
