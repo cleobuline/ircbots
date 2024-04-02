@@ -3,7 +3,7 @@ Comprend une commande save [titre] qui sauve la conversation [titre],
 load qui recharge la conversation,
 raz qui oubie la conversation,
 il existe aussi  la commande files qui liste les conversations disponibles pour l'user considéré 
-usage zozo: votre question ou votre texte, zozo commande 
+usage zozo: votre question ou votre texte, zozo: commande 
 
 N'OUBLIEZ PAS de mettre le fichier zozo.json dans le même répertoire que zozo.py et de le modifier selon votre propres paramètres 
 
