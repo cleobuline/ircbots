@@ -3,10 +3,10 @@ import subprocess
 import re
 
 # Paramètres pour le serveur IRC et le bot
-SERVER = "irc.sample.net"
+SERVER = "labynet.fr"
 PORT = 6667
-CHANNEL = "#your_channel"
-NICK = "bot_name"
+CHANNEL = "#labynet"
+NICK = "title"
 
 # Connexion au serveur IRC
 irc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -168,3 +168,7 @@ while True:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur: {error}\r\n".encode())
             else:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Playlist temporaire créée avec les pistes de {artist_name}\r\n".encode())
+
+        elif message.startswith('!say'):
+            text_to_say = message.split(' ', 1)[1]  # Extract the text to be spoken
+            subprocess.run(['say', text_to_say])  # Use the 'say' command to speak the text
