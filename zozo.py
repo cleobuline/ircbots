@@ -27,7 +27,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         
     def on_welcome(self, connection, event):
         connection.join(self.channel)
-
+        
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
         user = event.source.nick
@@ -35,7 +35,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         bot_nickname = self.connection.get_nickname()
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
-            if message.strip().lower().startswith("raz"):
+            if message.strip().lower().startswith("help"):
+                connection.privmsg(self.channel, "'raz' oublie, 'save [titre]', 'load [titre]', 'files' liste les conversations ")
+                return
+            elif message.strip().lower().startswith("raz"):
                 self.reset_user_context(user)
                 return
             elif message.strip().lower().startswith("save"):
@@ -57,14 +60,22 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             elif message.strip().lower().startswith("files"):
                 self.list_user_files(user)
                 return
-
+            elif message.strip().lower().startswith("delete"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.delete_user_context(user, title)
+                else:
+                    connection.privmsg(self.channel, "Veuillez spécifier un titre pour la suppression.")
+                return
+ 
             self.update_context(user, message)
 
             try:
                 response = self.generate_response(user, message, self.channel)
             except Exception as e:
                 response = "Une erreur s'est produite lors de la génération de la réponse."
-                print(f"Erreur OpenAI: {e}")
+                self.connection.privmsg(self.channel, f"Erreur OpenAI: {e}")
 
             self.send_message_in_chunks(connection, self.channel, response)
 
@@ -104,9 +115,9 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             filename = f"{user}_{title}_context.json"
             with open(filename, "w") as file:
                 json.dump(context, file)
-            print(f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
+            self.connection.privmsg(self.channel, f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
         else:
-            print(f"Aucun contexte à sauvegarder pour {user}.")
+            self.connection.privmsg(self.channel, f"Aucun contexte à sauvegarder pour {user}.")
 
     def load_user_context(self, user, title):
         filename = f"{user}_{title}_context.json"
@@ -129,6 +140,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.connection.privmsg(self.channel, f"- {file}")
         else:
             self.connection.privmsg(self.channel, f"Aucun fichier de contexte disponible pour {user}.")
+            
+    def delete_user_context(self, user, title):
+        filename = f"{user}_{title}_context.json"
+        if os.path.exists(filename):
+           os.remove(filename)
+           self.connection.privmsg(self.channel, f"Fichier de contexte '{title}' supprimé pour l'utilisateur {user}.")
+        else:
+           self.connection.privmsg(self.channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
 
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
