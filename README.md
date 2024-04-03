@@ -1,9 +1,13 @@
 zozo.py ircbot permettant de converser via gpt-4 avec differents utilisateurs du chat chacun ayant son contexte. 
 Comprend une commande save [titre] qui sauve la conversation titre 
 load [titre] qui recharge la conversation titre ,
+
 raz qui oublie la conversation,
-delete [titre] efface la conversation titre
+
+delete [titre] efface la conversation titre,
+
 il existe aussi  la commande files sans paramètre qui liste les conversations disponibles pour l'user considéré 
+
 usage zozo: votre question ou votre texte, et  zozo: commande 
 
 N'OUBLIEZ PAS de mettre le fichier zozo.json dans le même répertoire que zozo.py et de le modifier selon votre propres paramètres (notamment le nom du bot :)
