@@ -19,7 +19,9 @@ rosalie.py permet le commande !yt [la requête ] qui cherche sur youtube et !gg 
 
 title.py permet de telecommander l'application Musique sur Macos, utile si on streame le son sur le web 
 avec icecast et un programme de streaming  tel BUTT( gratuit )  ou Audio HiJack ( payant mais puissant et pas cher ) 
+
 Liste des commandes disponibles : 
+
 !title - !next - !prev - !pause - !play - !playlist [nom_playlist] - !track [nom_piste] - !genre [nom_genre] - !artist [nom_artiste]
 
 pour voir ces bots en actions http://labynet.fr
