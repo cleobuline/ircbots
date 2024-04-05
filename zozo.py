@@ -36,10 +36,11 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             if message.strip().lower().startswith("help"):
-                connection.privmsg(self.channel, "'raz' oublie, 'save [titre]', 'load [titre]', 'files' liste les conversations ")
+                connection.privmsg(self.channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations ")
                 return
             elif message.strip().lower().startswith("raz"):
                 self.reset_user_context(user)
+                connection.privmsg(self.channel, "Conversation oubliée ...")
                 return
             elif message.strip().lower().startswith("save"):
                 parts = message.strip().split(" ", 1)
@@ -112,7 +113,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def save_user_context(self, user, title):
         if (self.channel, user) in self.user_contexts and user in self.user_contexts[(self.channel, user)]:
             context = self.user_contexts[(self.channel, user)][user]
-            filename = f"{user}_{title}_context.json"
+            filename = f"{user}.{title}.context.json"
             with open(filename, "w") as file:
                 json.dump(context, file)
             self.connection.privmsg(self.channel, f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
@@ -120,7 +121,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(self.channel, f"Aucun contexte à sauvegarder pour {user}.")
 
     def load_user_context(self, user, title):
-        filename = f"{user}_{title}_context.json"
+        filename = f"{user}.{title}.context.json"
         if os.path.exists(filename):
             with open(filename, "r") as file:
                 context = json.load(file)
@@ -133,7 +134,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(self.channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
 
     def list_user_files(self, user):
-        files = [filename.split("_")[1].replace("_context.json", "") for filename in os.listdir() if filename.startswith(user) and filename.endswith("_context.json")]
+        files = [filename.split(".")[1].replace(".context.json", "") for filename in os.listdir() if filename.startswith(user) and filename.endswith(".context.json")]
         if files:
             self.connection.privmsg(self.channel, f"Fichiers de contexte disponibles pour {user} :")
             for file in files:
@@ -142,7 +143,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(self.channel, f"Aucun fichier de contexte disponible pour {user}.")
             
     def delete_user_context(self, user, title):
-        filename = f"{user}_{title}_context.json"
+        filename = f"{user}.{title}.context.json"
         if os.path.exists(filename):
            os.remove(filename)
            self.connection.privmsg(self.channel, f"Fichier de contexte '{title}' supprimé pour l'utilisateur {user}.")
@@ -153,6 +154,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         lines = message.split('\n')
 
         for line in lines:
+            line = line.replace('\n', '')  # Supprimer les retours chariot
             if len(line.encode('utf-8')) <= 392:
                 connection.privmsg(target, line.strip())
             else:
