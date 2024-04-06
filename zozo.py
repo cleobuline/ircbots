@@ -25,6 +25,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.user_contexts = {}
         self.max_num_line = max_num_line
         
+        # Create a directory for storing conversation context files if it doesn't exist
+        if not os.path.exists("conversations"):
+            os.makedirs("conversations")
+
     def on_welcome(self, connection, event):
         connection.join(self.channel)
         
@@ -113,7 +117,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def save_user_context(self, user, title):
         if (self.channel, user) in self.user_contexts and user in self.user_contexts[(self.channel, user)]:
             context = self.user_contexts[(self.channel, user)][user]
-            filename = f"{user}.{title}.context.json"
+            filename = os.path.join("conversations", f"{user}.{title}.context.json")
             with open(filename, "w") as file:
                 json.dump(context, file)
             self.connection.privmsg(self.channel, f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
@@ -121,7 +125,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(self.channel, f"Aucun contexte à sauvegarder pour {user}.")
 
     def load_user_context(self, user, title):
-        filename = f"{user}.{title}.context.json"
+        filename = os.path.join("conversations", f"{user}.{title}.context.json")
         if os.path.exists(filename):
             with open(filename, "r") as file:
                 context = json.load(file)
@@ -134,16 +138,16 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(self.channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
 
     def list_user_files(self, user):
-        files = [filename.split(".")[1].replace(".context.json", "") for filename in os.listdir() if filename.startswith(user) and filename.endswith(".context.json")]
+        files = [filename.split(".")[1].replace(".context.json", "") for filename in os.listdir("conversations") if filename.startswith(user) and filename.endswith(".context.json")]
         if files:
             self.connection.privmsg(self.channel, f"Fichiers de contexte disponibles pour {user} :")
             for file in files:
                 self.connection.privmsg(self.channel, f"- {file}")
         else:
             self.connection.privmsg(self.channel, f"Aucun fichier de contexte disponible pour {user}.")
-            
+
     def delete_user_context(self, user, title):
-        filename = f"{user}.{title}.context.json"
+        filename = os.path.join("conversations", f"{user}.{title}.context.json")
         if os.path.exists(filename):
            os.remove(filename)
            self.connection.privmsg(self.channel, f"Fichier de contexte '{title}' supprimé pour l'utilisateur {user}.")
