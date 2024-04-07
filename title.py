@@ -38,12 +38,10 @@ while True:
         message = data.split('PRIVMSG', 1)[1].split(':', 1)[1].strip()
 
         if message.startswith('!title'):
-            # result, error = execute_applescript('tell application "Music" to get {name, artist, album } of current track')
             title, error = execute_applescript('tell application "Music" to get {name } of current track')
             artist, error = execute_applescript('tell application "Music" to get { artist} of current track')
             album, error = execute_applescript('tell application "Music" to get { album } of current track')
             if title:
-                # title, artist, album = result.split(", ")
                 irc_socket.send(f"PRIVMSG {CHANNEL} :TITRE: {title} ARTIST: {artist} ALBUM: {album}\r\n".encode())
             else:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur: {error}\r\n".encode())
@@ -85,7 +83,6 @@ while True:
                 all_playlists = all_playlists.split(', ')
                 partial_matches = find_partial_playlist(playlist_name, all_playlists)
                 if partial_matches:
-                    # Choisissons la première correspondance partielle trouvé
                     selected_playlist = partial_matches[0]
                     script = f'tell application "Music" to play playlist "{selected_playlist}"'
                     _, error = execute_applescript(script)
@@ -95,15 +92,17 @@ while True:
                         irc_socket.send(f"PRIVMSG {CHANNEL} :Lecture de la playlist : {selected_playlist}\r\n".encode())
                 else:
                     irc_socket.send(f"PRIVMSG {CHANNEL} :Aucune playlist trouvée proche de : {playlist_name}\r\n".encode())
+
         elif message.startswith('!play'):
             _, error = execute_applescript('tell application "Music" to play')
             if error:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur: {error}\r\n".encode())
             else:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :La lecture de la musique a été démarrée.\r\n".encode())
+
         elif message.startswith('!help'):
             commands_list = "Liste des commandes disponibles : " \
-                    "!title - !next - !prev - !pause - !play - !playlist [nom_playlist] - !track [nom_piste] - !genre [nom_genre] - !artist [nom_artiste]"
+                    "!title - !next - !prev - !pause - !play - !playlist [nom_playlist] - !track [nom_piste] - !genre [nom_genre] - !artist [nom_artiste] - !say [texte à prononcer]"
             irc_socket.send(f"PRIVMSG {CHANNEL} :{commands_list}\r\n".encode())
 
         elif message.startswith('!track'):
@@ -121,6 +120,7 @@ while True:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur: {error}\r\n".encode())
             else:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Lecture de la piste contenant : {track_name_partial}\r\n".encode())
+
         elif message.startswith('!genre'):
             genre_name = message.split('!genre', 1)[1].strip()
             script = f'set genre_name to "{genre_name}"\n'
@@ -144,7 +144,6 @@ while True:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur: {error}\r\n".encode())
             else:
                 irc_socket.send(f"PRIVMSG {CHANNEL} :Playlist temporaire créée avec les pistes du genre {genre_name}\r\n".encode())
-
 
         elif message.startswith('!artist'):
             artist_name = message.split('!artist', 1)[1].strip()
@@ -171,4 +170,14 @@ while True:
 
         elif message.startswith('!say'):
             text_to_say = message.split(' ', 1)[1]  # Extract the text to be spoken
-            subprocess.run(['say', text_to_say])  # Use the 'say' command to speak the text
+            print (text_to_say)
+            set_volume_script = 'tell application "Music" to set sound volume to 50'
+            _, error = execute_applescript(set_volume_script)
+            if error:
+                irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur lors de la modification du volume : {error}\r\n".encode())
+            else:
+                subprocess.run(['say', text_to_say])  # Utilise la commande 'say' pour prononcer le texte
+                set_volume_script = 'tell application "Music" to set sound volume to 100'
+                _, error = execute_applescript(set_volume_script)
+                if error:
+                    irc_socket.send(f"PRIVMSG {CHANNEL} :Erreur lors de la modification du volume : {error}\r\n".encode())
