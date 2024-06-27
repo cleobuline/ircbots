@@ -17,10 +17,12 @@ class WikipediaBot(irc.bot.SingleServerIRCBot):
     def __init__(self, channel, nickname, server, port=6667):
         super().__init__([(server, port)], nickname, nickname)
         self.channel = channel
+        self.nickname = nickname  # Store bot's nickname
+
         self.wikipedia = wikipediaapi.Wikipedia(
             language='fr',
             extract_format=wikipediaapi.ExtractFormat.HTML,
-            user_agent='Wikipedia IRC Bot/1.0 (YourContactEmail@example.com)'
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         )
 
     def on_welcome(self, connection, event):
@@ -28,11 +30,11 @@ class WikipediaBot(irc.bot.SingleServerIRCBot):
 
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
-        prefix =   ' '
+        prefix = ''
 
-        # Check if bot's nickname is mentioned in the message
-        if self.connection.get_nickname().lower() in message.lower():
-            query = message.split(self.connection.get_nickname(), 1)[-1].strip()
+        # Check if message starts with "<nickname>: "
+        if message.lower().startswith(f"{self.nickname.lower()}:"):
+            query = message.split(f"{self.nickname}:", 1)[-1].strip()
             response = self.search_wikipedia(query)
             
             if response:
