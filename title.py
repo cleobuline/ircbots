@@ -2,14 +2,20 @@ import irc.bot
 import irc.strings
 import subprocess
 import re
+import threading
+import time
 
 class MusicBot(irc.bot.SingleServerIRCBot):
     def __init__(self, server, port, channel, nickname):
         irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
         self.channel = channel
+        self.current_title = None
+        self.polling_thread = threading.Thread(target=self.poll_current_track)
+        self.polling_thread.daemon = True
 
     def on_welcome(self, connection, event):
         connection.join(self.channel)
+        self.polling_thread.start()
 
     def on_join(self, connection, event):
         connection.privmsg(self.channel, "Bonjour ! Tapez !help pour obtenir la liste des commandes disponibles.")
@@ -22,6 +28,9 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def do_command(self, event, command):
         nick = event.source.nick
+        if nick == self.connection.get_nickname():
+            return  # Ignore les messages provenant du bot lui-même
+
         connection = self.connection
 
         if command.startswith('!title'):
@@ -47,7 +56,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         elif command.startswith('!help'):
             self.handle_help_command(connection)
         else:
-            connection.privmsg(self.channel, f"Commande non reconnue : {command}")
+            pass  # Ne rien faire si la commande n'est pas reconnue
 
     def execute_applescript(self, script):
         process = subprocess.Popen(['osascript', '-e', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -56,14 +65,20 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             return None, error.decode()
         return output.decode().strip(), None
 
-    def find_partial_playlist(self, playlist_name, all_playlists):
-        matches = [p for p in all_playlists if re.search(playlist_name, p, re.IGNORECASE)]
-        return matches
+    def poll_current_track(self):
+        while True:
+            title, error = self.execute_applescript('tell application "Music" to get name of current track')
+            if title and title != self.current_title:
+                self.current_title = title
+                artist, _ = self.execute_applescript('tell application "Music" to get artist of current track')
+                album, _ = self.execute_applescript('tell application "Music" to get album of current track')
+                self.connection.privmsg(self.channel, f"Nouvelle chanson : TITRE: {title} ARTIST: {artist} ALBUM: {album}")
+            time.sleep(5)
 
     def handle_title_command(self, connection):
-        title, error = self.execute_applescript('tell application "Music" to get {name} of current track')
-        artist, error = self.execute_applescript('tell application "Music" to get {artist} of current track')
-        album, error = self.execute_applescript('tell application "Music" to get {album} of current track')
+        title, error = self.execute_applescript('tell application "Music" to get name of current track')
+        artist, error = self.execute_applescript('tell application "Music" to get artist of current track')
+        album, error = self.execute_applescript('tell application "Music" to get album of current track')
         if title:
             connection.privmsg(self.channel, f"TITRE: {title} ARTIST: {artist} ALBUM: {album}")
         else:
@@ -202,9 +217,9 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         connection.privmsg(self.channel, help_message)
 
 if __name__ == "__main__":
-    server = "your server adress "
+    server = "labynet.fr"
     port = 6667
-    channel = "#your channel""
-    nickname = "name of the bot"
+    channel = "#labynet"
+    nickname = "title"
     bot = MusicBot(server, port, channel, nickname)
     bot.start()
