@@ -5,6 +5,7 @@ import re
 import threading
 import time
 
+
 class MusicBot(irc.bot.SingleServerIRCBot):
     def __init__(self, server, port, channel, nickname):
         irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
@@ -12,6 +13,8 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         self.current_title = None
         self.polling_thread = threading.Thread(target=self.poll_current_track)
         self.polling_thread.daemon = True
+        self.polling_active = threading.Event()
+        self.polling_active.set()  # Start with polling active
 
     def on_welcome(self, connection, event):
         connection.join(self.channel)
@@ -29,7 +32,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
     def do_command(self, event, command):
         nick = event.source.nick
         if nick == self.connection.get_nickname():
-            return  # Ignore les messages provenant du bot lui-même
+            return  # Ignore messages from the bot itself
 
         connection = self.connection
 
@@ -55,18 +58,26 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             self.handle_say_command(connection, command)
         elif command.startswith('!help'):
             self.handle_help_command(connection)
+        elif command.startswith('!pooloff'):
+            self.handle_pooloff_command(connection)
+        elif command.startswith('!poolon'):
+            self.handle_poolon_command(connection)
         else:
-            pass  # Ne rien faire si la commande n'est pas reconnue
+            pass  # Do nothing if the command is not recognized
 
     def execute_applescript(self, script):
-        process = subprocess.Popen(['osascript', '-e', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output, error = process.communicate()
-        if error:
-            return None, error.decode()
-        return output.decode().strip(), None
+        try:
+            process = subprocess.Popen(['osascript', '-e', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            output, error = process.communicate()
+            if error:
+                return None, error.decode().strip()
+            return output.decode().strip(), None
+        except Exception as e:
+            return None, str(e)
 
     def poll_current_track(self):
         while True:
+            self.polling_active.wait()  # Wait here if polling is paused
             title, error = self.execute_applescript('tell application "Music" to get name of current track')
             if title and title != self.current_title:
                 self.current_title = title
@@ -77,8 +88,8 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def handle_title_command(self, connection):
         title, error = self.execute_applescript('tell application "Music" to get name of current track')
-        artist, error = self.execute_applescript('tell application "Music" to get artist of current track')
-        album, error = self.execute_applescript('tell application "Music" to get album of current track')
+        artist, _ = self.execute_applescript('tell application "Music" to get artist of current track')
+        album, _ = self.execute_applescript('tell application "Music" to get album of current track')
         if title:
             connection.privmsg(self.channel, f"TITRE: {title} ARTIST: {artist} ALBUM: {album}")
         else:
@@ -140,14 +151,16 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def handle_track_command(self, connection, command):
         track_name_partial = command.split('!track', 1)[1].strip()
-        script = f'tell application "Music"\n'
-        script += f'set found_tracks to search playlist "général" for "{track_name_partial}"\n'
-        script += f'if found_tracks is not {{}} then\n'
-        script += f'    play item 1 of found_tracks\n'
-        script += f'else\n'
-        script += f'    set error_message to "Piste non trouvée : {track_name_partial}"\n'
-        script += f'end if\n'
-        script += f'end tell\n'
+        script = (
+            f'tell application "Music"\n'
+            f'set found_tracks to search playlist "général" for "{track_name_partial}"\n'
+            f'if found_tracks is not {{}} then\n'
+            f'    play item 1 of found_tracks\n'
+            f'else\n'
+            f'    set error_message to "Piste non trouvée : {track_name_partial}"\n'
+            f'end if\n'
+            f'end tell\n'
+        )
         _, error = self.execute_applescript(script)
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -156,21 +169,23 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def handle_genre_command(self, connection, command):
         genre_name = command.split('!genre', 1)[1].strip()
-        script = f'set genre_name to "{genre_name}"\n'
-        script += f'tell application "Music"\n'
-        script += f'set genre_tracks to every track of playlist "général" whose genre is genre_name\n'
-        script += f'if genre_tracks is not {{}} then\n'
-        script += f'    try\n'
-        script += f'        delete every playlist whose name is "temp"\n'
-        script += f'    end try\n'
-        script += f'    set temp_playlist to make new playlist with properties {{name:"temp"}}\n'
-        script += f'    repeat with a_track in genre_tracks\n'
-        script += f'        duplicate a_track to temp_playlist\n'
-        script += f'    end repeat\n'
-        script += f'    play temp_playlist\n'
-        script += f'else\n'
-        script += f'end if\n'
-        script += f'end tell\n'
+        script = (
+            f'set genre_name to "{genre_name}"\n'
+            f'tell application "Music"\n'
+            f'set genre_tracks to every track of playlist "général" whose genre is genre_name\n'
+            f'if genre_tracks is not {{}} then\n'
+            f'    try\n'
+            f'        delete every playlist whose name is "temp"\n'
+            f'    end try\n'
+            f'    set temp_playlist to make new playlist with properties {{name:"temp"}}\n'
+            f'    repeat with a_track in genre_tracks\n'
+            f'        duplicate a_track to temp_playlist\n'
+            f'    end repeat\n'
+            f'    play temp_playlist\n'
+            f'else\n'
+            f'end if\n'
+            f'end tell\n'
+        )
         _, error = self.execute_applescript(script)
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -179,20 +194,22 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def handle_artist_command(self, connection, command):
         artist_name = command.split('!artist', 1)[1].strip()
-        script = f'tell application "Music"\n'
-        script += f'set artist_tracks to search playlist "général" for "{artist_name}" only artists\n'
-        script += f'if artist_tracks is not {{}} then\n'
-        script += f'    try\n'
-        script += f'        delete every playlist whose name is "temp"\n'
-        script += f'    end try\n'
-        script += f'    set temp_playlist to make new playlist with properties {{name:"temp"}}\n'
-        script += f'    repeat with a_track in artist_tracks\n'
-        script += f'        duplicate a_track to temp_playlist\n'
-        script += f'    end repeat\n'
-        script += f'    play temp_playlist\n'
-        script += f'else\n'
-        script += f'end if\n'
-        script += f'end tell\n'
+        script = (
+            f'tell application "Music"\n'
+            f'set artist_tracks to search playlist "général" for "{artist_name}" only artists\n'
+            f'if artist_tracks is not {{}} then\n'
+            f'    try\n'
+            f'        delete every playlist whose name is "temp"\n'
+            f'    end try\n'
+            f'    set temp_playlist to make new playlist with properties {{name:"temp"}}\n'
+            f'    repeat with a_track in artist_tracks\n'
+            f'        duplicate a_track to temp_playlist\n'
+            f'    end repeat\n'
+            f'    play temp_playlist\n'
+            f'else\n'
+            f'end if\n'
+            f'end tell\n'
+        )
         _, error = self.execute_applescript(script)
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -201,6 +218,10 @@ class MusicBot(irc.bot.SingleServerIRCBot):
 
     def handle_say_command(self, connection, command):
         text_to_say = command.split(' ', 1)[1]
+        if not text_to_say:
+            connection.privmsg(self.channel, "Erreur: Message manquant.")
+            return
+        
         set_volume_script = 'tell application "Music" to set sound volume to 50'
         _, error = self.execute_applescript(set_volume_script)
         if error:
@@ -213,8 +234,37 @@ class MusicBot(irc.bot.SingleServerIRCBot):
                 connection.privmsg(self.channel, f"Erreur lors de la modification du volume : {error}")
 
     def handle_help_command(self, connection):
-        help_message = "Commandes disponibles : !title, !next, !prev, !pause, !play, !playlist <nom>, !track <nom>, !genre <nom>, !artist <nom>, !say <message>"
+        help_message = (
+            "Commandes disponibles : !title, !next, !prev, !pause, !play, !playlist <nom>, !track <nom>, "
+            "!genre <nom>, !artist <nom>, !say <message>, !pooloff, !poolon"
+        )
         connection.privmsg(self.channel, help_message)
+
+    def handle_pooloff_command(self, connection):
+        self.polling_active.clear()
+        connection.privmsg(self.channel, "Polling arrêté.")
+
+    def handle_poolon_command(self, connection):
+        self.polling_active.set()
+        connection.privmsg(self.channel, "Polling démarré.")
+
+    def find_partial_playlist(self, partial_name, playlists):
+        partial_name_lower = partial_name.lower()
+        return [playlist for playlist in playlists if partial_name_lower in playlist.lower()]
+
+    def stop_polling_thread(self):
+        self.polling_thread_running = False
+        self.polling_active.set()  # Ensure the polling thread exits if waiting
+        self.polling_thread.join()
+
+    def start(self):
+        self.polling_thread_running = True
+        super().start()
+
+    def stop(self):
+        self.stop_polling_thread()
+        super().disconnect("Bot is stopping")
+
 
 if __name__ == "__main__":
     server = "labynet.fr"
