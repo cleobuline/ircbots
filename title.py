@@ -44,10 +44,10 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             self.handle_prev_command(connection)
         elif command.startswith('!pause'):
             self.handle_pause_command(connection)
-        elif command.startswith('!play'):
-            self.handle_play_command(connection)
         elif command.startswith('!playlist'):
             self.handle_playlist_command(connection, command)
+        elif command.startswith('!play'):
+            self.handle_play_command(connection)
         elif command.startswith('!track'):
             self.handle_track_command(connection, command)
         elif command.startswith('!genre'):
@@ -58,10 +58,10 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             self.handle_say_command(connection, command)
         elif command.startswith('!help'):
             self.handle_help_command(connection)
-        elif command.startswith('!pooloff'):
-            self.handle_pooloff_command(connection)
-        elif command.startswith('!poolon'):
-            self.handle_poolon_command(connection)
+        elif command.startswith('!polloff'):
+            self.handle_polloff_command(connection)
+        elif command.startswith('!pollon'):
+            self.handle_pollon_command(connection)
         else:
             pass  # Do nothing if the command is not recognized
 
@@ -83,7 +83,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
                 self.current_title = title
                 artist, _ = self.execute_applescript('tell application "Music" to get artist of current track')
                 album, _ = self.execute_applescript('tell application "Music" to get album of current track')
-                self.connection.privmsg(self.channel, f"Nouvelle chanson : TITRE: {title} ARTIST: {artist} ALBUM: {album}")
+                self.connection.privmsg(self.channel, f"http://labynet.fr:8000/stream : TITRE: {title} ARTIST: {artist} ALBUM: {album}")
             time.sleep(5)
 
     def handle_title_command(self, connection):
@@ -236,15 +236,15 @@ class MusicBot(irc.bot.SingleServerIRCBot):
     def handle_help_command(self, connection):
         help_message = (
             "Commandes disponibles : !title, !next, !prev, !pause, !play, !playlist <nom>, !track <nom>, "
-            "!genre <nom>, !artist <nom>, !say <message>, !pooloff, !poolon"
+            "!genre <nom>, !artist <nom>, !say <message>, !polloff, !pollon"
         )
         connection.privmsg(self.channel, help_message)
 
-    def handle_pooloff_command(self, connection):
+    def handle_polloff_command(self, connection):
         self.polling_active.clear()
         connection.privmsg(self.channel, "Polling arrêté.")
 
-    def handle_poolon_command(self, connection):
+    def handle_pollon_command(self, connection):
         self.polling_active.set()
         connection.privmsg(self.channel, "Polling démarré.")
 
