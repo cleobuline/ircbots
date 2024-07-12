@@ -1,5 +1,5 @@
 {
-  "channel": "#labynet",
+  "channels": "#labynet,#otherChannel",
   "nickname": "zozo",
   "server": "labynet.fr",
   "port": 6667,
