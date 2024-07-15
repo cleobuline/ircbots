@@ -7,10 +7,10 @@ import urllib.parse
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "YOUR GOOGLE API KEY HERE"
-        self.server = "labynet.fr"
+        self.api_key = "your google api key here "
+        self.server = "irc.europnet.org"
         self.port = 6667
-        self.channel = "#labynet"
+        self.channel = "#vortex"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
