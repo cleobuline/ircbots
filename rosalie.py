@@ -4,11 +4,10 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import urllib.parse
-import json
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "Google api here"
+        self.api_key = "YOUR GOOGLE API KEY HERE"
         self.server = "labynet.fr"
         self.port = 6667
         self.channel = "#labynet"
@@ -30,7 +29,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 if self.is_streaming_url(url):
                     continue
                 
-                if "youtube.com" in url or "youtu.be" in url:
+                if "youtube.com" in url or "youtu.be" in url or "music.youtube.com" in url:
                     title = self.get_youtube_title(url)
                 else:
                     title = self.get_page_title(url)
@@ -133,7 +132,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
     def get_youtube_title(self, url):
         try:
             parsed_url = urllib.parse.urlparse(url)
-            if 'youtube.com' in parsed_url.netloc:
+            if 'youtube.com' in parsed_url.netloc or 'music.youtube.com' in parsed_url.netloc:
                 video_id = urllib.parse.parse_qs(parsed_url.query).get('v')
             elif 'youtu.be' in parsed_url.netloc:
                 video_id = parsed_url.path.lstrip('/')
