@@ -1,8 +1,6 @@
 import irc.bot
 import irc.strings
-from irc.client import ip_numstr_to_quad, ip_quad_to_numstr
 import openai
-import time
 import json
 import os
 
@@ -136,11 +134,15 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.user_contexts[(channel, user)] = context_list[1:]
 
     def generate_response(self, channel, user, message):
-        prompt_text = "répond seulement à la dernière ligne du texte  en tenant compte de toutes les lignes du contexte   \n".join(self.user_contexts[(channel, user)])
+        context = "\n".join(self.user_contexts[(channel, user)][:-1])  # Contexte sans la dernière ligne
+        last_message = self.user_contexts[(channel, user)][-1]  # Dernière ligne du contexte (la nouvelle requête)
+
+        prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
+        
         response = openai.ChatCompletion.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": prompt_text}
+                {"role": "user", "content": prompt_text}
             ]
         )
 
@@ -195,7 +197,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.blocked_users.discard(user)
 
     def change_model(self, channel, user, model):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o",  "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # Add other valid models as needed
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # Add other valid models as needed
         if model in valid_models:
             self.model = model
             self.connection.privmsg(channel, f"Le modèle a été changé en {model}.")
@@ -203,7 +205,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(channel, f"Modèle invalide. Les modèles valides sont: {', '.join(valid_models)}")
 
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o",  "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # List of valid models
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # List of valid models
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def send_message_in_chunks(self, connection, target, message):
@@ -212,18 +214,15 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         for line in lines:
             line = line.replace('\n', '')  # Supprimer les retours chariot
             if len(line.encode('utf-8')) <= 392:
-                
                 connection.privmsg(target, line.strip())
             else:
                 while line:
                     if len(line.encode('utf-8')) > 392:
                         last_space_index = line[:392].rfind(' ')
                         if last_space_index == -1:
-                            
                             connection.privmsg(target, line[:392].strip())
                             line = line[392:]
                         else:
-                            
                             connection.privmsg(target, line[:last_space_index].strip())
                             line = line[last_space_index:].strip()
                     else:
