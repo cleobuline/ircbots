@@ -17,7 +17,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         port = config["port"]
         api_key = config["api_key"]
         max_num_line = config["max_num_line"]
-        self.admin_user = config["admin_user"]  # Lire l'utilisateur admin
+        self.admin_user = config["admin_user"]
 
         irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
         self.channel_list = [channel.strip() for channel in channel_list]
@@ -25,9 +25,9 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         openai.api_key = self.api_key
         self.user_contexts = {}
         self.max_num_line = max_num_line
-        self.blocked_users = set()  # Ensemble des utilisateurs bloqués
+        self.blocked_users = set()
+        self.model = "gpt-3.5-turbo"  # Default model
         
-        # Créer un répertoire pour stocker les fichiers de contexte de conversation s'il n'existe pas
         if not os.path.exists("conversations"):
             os.makedirs("conversations")
 
@@ -44,7 +44,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             if message.strip().lower().startswith("help"):
-                connection.privmsg(channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur")
+                connection.privmsg(channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur, 'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides")
                 return
             elif message.strip().lower().startswith("raz"):
                 self.reset_user_context(channel, user)
@@ -98,10 +98,19 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         connection.privmsg(channel, f"Utilisateur {unblocked_user} débloqué.")
                     else:
                         connection.privmsg(channel, "Veuillez spécifier un utilisateur à débloquer.")
-                else:
-                    connection.privmsg(channel, "Vous n'avez pas l'autorisation de débloquer des utilisateurs.")
                 return
-    
+            elif message.strip().lower().startswith("model"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    model = parts[1].strip()
+                    self.change_model(channel, user, model)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un modèle à utiliser.")
+                return
+            elif message.strip().lower().startswith("list-models"):
+                self.list_models(channel)
+                return
+
             if user in self.blocked_users:
                 connection.privmsg(channel, f"Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
                 return
@@ -127,9 +136,9 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.user_contexts[(channel, user)] = context_list[1:]
 
     def generate_response(self, channel, user, message):
-        prompt_text = "répond seulement a la dernière phrase du texte  en tenant compte du contexte \n".join(self.user_contexts[(channel, user)])
+        prompt_text = "répond seulement à la dernière ligne du texte  en tenant compte de toutes les lignes du contexte   \n".join(self.user_contexts[(channel, user)])
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model=self.model,
             messages=[
                 {"role": "system", "content": prompt_text}
             ]
@@ -185,27 +194,42 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def unblock_user(self, user):
         self.blocked_users.discard(user)
 
+    def change_model(self, channel, user, model):
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o",  "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # Add other valid models as needed
+        if model in valid_models:
+            self.model = model
+            self.connection.privmsg(channel, f"Le modèle a été changé en {model}.")
+        else:
+            self.connection.privmsg(channel, f"Modèle invalide. Les modèles valides sont: {', '.join(valid_models)}")
+
+    def list_models(self, channel):
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o",  "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # List of valid models
+        self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
+
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
 
         for line in lines:
             line = line.replace('\n', '')  # Supprimer les retours chariot
             if len(line.encode('utf-8')) <= 392:
+                
                 connection.privmsg(target, line.strip())
             else:
                 while line:
                     if len(line.encode('utf-8')) > 392:
                         last_space_index = line[:392].rfind(' ')
                         if last_space_index == -1:
+                            
                             connection.privmsg(target, line[:392].strip())
                             line = line[392:]
                         else:
+                            
                             connection.privmsg(target, line[:last_space_index].strip())
                             line = line[last_space_index:].strip()
                     else:
                         connection.privmsg(target, line.strip())
                         line = ''
-                    time.sleep(0.5)
+                    
 
 if __name__ == "__main__":
     bot = ChatGPTBot("zozo.json")
