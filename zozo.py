@@ -3,6 +3,7 @@ import irc.strings
 import openai
 import json
 import os
+import textwrap  # Importation de la bibliothèque textwrap
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -24,7 +25,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.user_contexts = {}
         self.max_num_line = max_num_line
         self.blocked_users = set()
-        self.model = "gpt-3.5-turbo"  # Default model
+        self.model = "gpt-4o-mini"  # Default model
         
         if not os.path.exists("conversations"):
             os.makedirs("conversations")
@@ -209,26 +210,15 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def send_message_in_chunks(self, connection, target, message):
-        lines = message.split('\n')
-
-        for line in lines:
-            line = line.replace('\n', '')  # Supprimer les retours chariot
-            if len(line.encode('utf-8')) <= 392:
-                connection.privmsg(target, line.strip())
-            else:
-                while line:
-                    if len(line.encode('utf-8')) > 392:
-                        last_space_index = line[:392].rfind(' ')
-                        if last_space_index == -1:
-                            connection.privmsg(target, line[:392].strip())
-                            line = line[392:]
-                        else:
-                            connection.privmsg(target, line[:last_space_index].strip())
-                            line = line[last_space_index:].strip()
-                    else:
-                        connection.privmsg(target, line.strip())
-                        line = ''
-                    
+        # Nombre maximum de caractères pour chaque message IRC
+        MAX_MESSAGE_LENGTH = 392
+        message = message.replace('\n', ' ').replace('\r', ' ')
+        # Utilise textwrap pour découper le message en morceaux adaptés
+        wrapped_lines = textwrap.wrap(message, width=MAX_MESSAGE_LENGTH, break_long_words=False, replace_whitespace=False)
+        
+        for line in wrapped_lines:
+            text=line.strip()
+            connection.privmsg(target, text)
 
 if __name__ == "__main__":
     bot = ChatGPTBot("zozo.json")
