@@ -4,6 +4,7 @@ import openai
 import json
 import os
 import textwrap  # Importation de la bibliothèque textwrap
+import time 
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
