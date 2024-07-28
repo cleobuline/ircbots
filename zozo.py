@@ -210,15 +210,26 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def send_message_in_chunks(self, connection, target, message):
-        # Nombre maximum de caractères pour chaque message IRC
-        MAX_MESSAGE_LENGTH = 392
-        message = message.replace('\n', ' ').replace('\r', ' ')
-        # Utilise textwrap pour découper le message en morceaux adaptés
-        wrapped_lines = textwrap.wrap(message, width=MAX_MESSAGE_LENGTH, break_long_words=False, replace_whitespace=False)
-        
-        for line in wrapped_lines:
-            text=line.strip()
-            connection.privmsg(target, text)
+        lines = message.split('\n')
+
+        for line in lines:
+            if len(line.encode('utf-8')) <= 392:
+                connection.privmsg(target, line.strip())
+            else:
+                while line:
+                    if len(line.encode('utf-8')) > 392:
+                        last_space_index = line[:392].rfind(' ')
+                        if last_space_index == -1:
+                            connection.privmsg(target, line[:392].strip())
+                            line = line[392:]
+                        else:
+                            connection.privmsg(target, line[:last_space_index].strip())
+                            line = line[last_space_index:].strip()
+                    else:
+                        connection.privmsg(target, line.strip())
+                        line = ''
+                    time.sleep(0.5)
+
 
 if __name__ == "__main__":
     bot = ChatGPTBot("zozo.json")
