@@ -1,0 +1,11 @@
+-- zozo.py
+pip install irc
+pip install openai
+-- rosalie.py 
+pip install irc
+pip install yt-dlp
+pip install requests
+pip install beautifulsoup4
+-- wikibot.py 
+pip install irc
+pip install wikipedia-api
