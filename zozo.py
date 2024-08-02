@@ -6,6 +6,7 @@ import os
 import textwrap
 import time
 import pyshorteners  # Importation de pyshorteners
+from openai.error import OpenAIError, Timeout
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -230,9 +231,9 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             type_tiny = pyshorteners.Shortener()
             short_url = type_tiny.tinyurl.short(long_url)
             connection.privmsg(channel, short_url)
-        except openai.error.Timeout as e:
+        except Timeout as e:
             connection.privmsg(channel, "API call timed out. Try again later.")
-        except openai.error.OpenAIError as e:
+        except OpenAIError as e:
             connection.privmsg(channel, f"API call failed. {str(e)}")
         except Exception as e:
             connection.privmsg(channel, f"An unexpected error occurred. {str(e)}")
