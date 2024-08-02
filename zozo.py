@@ -3,10 +3,8 @@ import irc.strings
 import openai
 import json
 import os
-import textwrap
 import time
-import pyshorteners  # Importation de pyshorteners
-from openai.error import OpenAIError, Timeout
+import requests
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -221,22 +219,23 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def generate_image(self, connection, channel, prompt):
+        response = openai.Image.create(
+            prompt=prompt,
+            n=1,
+            size="512x512"
+        )
+        long_url = response.data[0].url
+        short_url = self.shorten_url(long_url)
+        connection.privmsg(channel, short_url)
+
+    def shorten_url(self, long_url):
         try:
-            response = openai.Image.create(
-                prompt=prompt,
-                n=1,
-                size="512x512"
-            )
-            long_url = response.data[0].url
-            type_tiny = pyshorteners.Shortener()
-            short_url = type_tiny.tinyurl.short(long_url)
-            connection.privmsg(channel, short_url)
-        except Timeout as e:
-            connection.privmsg(channel, "API call timed out. Try again later.")
-        except OpenAIError as e:
-            connection.privmsg(channel, f"API call failed. {str(e)}")
-        except Exception as e:
-            connection.privmsg(channel, f"An unexpected error occurred. {str(e)}")
+            response = requests.post('https://api.tinyurl.com/create', data={'url': long_url})
+            response.raise_for_status()
+            short_url = response.json().get('tiny_url')
+            return short_url
+        except requests.RequestException as e:
+            return f"Erreur de raccourcissement d'URL: {e}"
 
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
