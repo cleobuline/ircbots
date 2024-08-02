@@ -13,6 +13,8 @@ delete [titre] efface la conversation titre,
 
 files sans paramètre qui liste les conversations disponibles pour l'user considéré 
 
+image prompt  génère une image 
+
 usage zozo: votre question ou votre texte, et  zozo: commande 
 
 N'OUBLIEZ PAS de mettre le fichier zozo.json dans le même répertoire que zozo.py et de le modifier selon votre propres paramètres (notamment le nom du bot :)
