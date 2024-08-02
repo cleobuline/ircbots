@@ -3,8 +3,9 @@ import irc.strings
 import openai
 import json
 import os
-import textwrap  # Importation de la bibliothèque textwrap
-import time 
+import textwrap
+import time
+import pyshorteners  # Importation de pyshorteners
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -44,7 +45,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             if message.strip().lower().startswith("help"):
-                connection.privmsg(channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur, 'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides")
+                connection.privmsg(channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur, 'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, 'image [prompt]' pour générer une image.")
                 return
             elif message.strip().lower().startswith("raz"):
                 self.reset_user_context(channel, user)
@@ -109,6 +110,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 return
             elif message.strip().lower().startswith("list-models"):
                 self.list_models(channel)
+                return
+            elif message.strip().lower().startswith("image"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    prompt = parts[1].strip()
+                    self.generate_image(connection, channel, prompt)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un prompt pour l'image.")
                 return
 
             if user in self.blocked_users:
@@ -210,6 +219,24 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # List of valid models
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
+    def generate_image(self, connection, channel, prompt):
+        try:
+            response = openai.Image.create(
+                prompt=prompt,
+                n=1,
+                size="512x512"
+            )
+            long_url = response.data[0].url
+            type_tiny = pyshorteners.Shortener()
+            short_url = type_tiny.tinyurl.short(long_url)
+            connection.privmsg(channel, short_url)
+        except openai.error.Timeout as e:
+            connection.privmsg(channel, "API call timed out. Try again later.")
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"API call failed. {str(e)}")
+        except Exception as e:
+            connection.privmsg(channel, f"An unexpected error occurred. {str(e)}")
+
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
 
@@ -230,7 +257,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         connection.privmsg(target, line.strip())
                         line = ''
                     time.sleep(0.5)
-
 
 if __name__ == "__main__":
     bot = ChatGPTBot("zozo.json")
