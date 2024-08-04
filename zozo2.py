@@ -6,15 +6,9 @@ import os
 import textwrap
 import time
 import requests
-import logging
+import pyshorteners
 from openai.error import OpenAIError, Timeout
-
-# Setup logging for error tracking
-logging.basicConfig(filename='chatgptbot.log', level=logging.ERROR, format='%(asctime)s:%(levelname)s:%(message)s')
-
-def handle_exception(e):
-    logging.error(f"Exception: {str(e)}")
-    return "An unexpected error occurred. Please try again later."
+import imgbbpy
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -28,6 +22,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         api_key = config["api_key"]
         max_num_line = config["max_num_line"]
         self.admin_user = config["admin_user"]
+        self.imgbb_api_key = config["imgbb_api_key"]
+        
 
         irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
         self.channel_list = [channel.strip() for channel in channel_list]
@@ -37,6 +33,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.max_num_line = max_num_line
         self.blocked_users = set()
         self.model = "gpt-4o-mini"  # Default model
+
+        self.imgbb_client = imgbbpy.SyncClient(self.imgbb_api_key)
         
         if not os.path.exists("conversations"):
             os.makedirs("conversations")
@@ -52,84 +50,122 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
 
         bot_nickname = self.connection.get_nickname()
         if message.strip().startswith(bot_nickname + ":"):
-            message = message[len(bot_nickname) + 1:].trim()
-            command, args = self.parse_command(message)
+            message = message[len(bot_nickname) + 1:].strip()
+            if message.strip().lower().startswith("help"):
+                connection.privmsg(channel, "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , 'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur, 'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, 'image [prompt]' pour générer une image.")
+                return
+            elif message.strip().lower().startswith("raz"):
+                self.reset_user_context(channel, user)
+                connection.privmsg(channel, "Conversation oubliée ...")
+                return
+            elif message.strip().lower().startswith("save"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.save_user_context(channel, user, title)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un titre pour la sauvegarde.")
+                return
+            elif message.strip().lower().startswith("load"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.load_user_context(channel, user, title)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un titre pour le chargement.")
+                return
+            elif message.strip().lower().startswith("files"):
+                self.list_user_files(channel, user)
+                return
+            elif message.strip().lower().startswith("delete"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    title = parts[1]
+                    self.delete_user_context(channel, user, title)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un titre pour la suppression.")
+                return
+            elif message.strip().lower().startswith("block"):
+                if user == self.admin_user:  # Vérifier l'autorisation de l'utilisateur
+                    parts = message.strip().split(" ", 1)
+                    if len(parts) > 1:
+                        blocked_user = parts[1]
+                        self.block_user(blocked_user)
+                        connection.privmsg(channel, f"Utilisateur {blocked_user} bloqué.")
+                    else:
+                        connection.privmsg(channel, "Veuillez spécifier un utilisateur à bloquer.")
+                else:
+                    connection.privmsg(channel, "Vous n'avez pas l'autorisation de bloquer des utilisateurs.")
+                return
+            elif message.strip().lower().startswith("unblock"):
+                if user == self.admin_user:  # Vérifier l'autorisation de l'utilisateur
+                    parts = message.strip().split(" ", 1)
+                    if len(parts) > 1:
+                        unblocked_user = parts[1]
+                        self.unblock_user(unblocked_user)
+                        connection.privmsg(channel, f"Utilisateur {unblocked_user} débloqué.")
+                    else:
+                        connection.privmsg(channel, "Veuillez spécifier un utilisateur à débloquer.")
+                return
+            elif message.strip().lower().startswith("model"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    model = parts[1].strip()
+                    self.change_model(channel, user, model)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un modèle à utiliser.")
+                return
+            elif message.strip().lower().startswith("list-models"):
+                self.list_models(channel)
+                return
+            elif message.strip().lower().startswith("image"):
+                parts = message.strip().split(" ", 1)
+                if len(parts) > 1:
+                    prompt = parts[1].strip()
+                    self.generate_image(connection, channel, prompt)
+                else:
+                    connection.privmsg(channel, "Veuillez spécifier un prompt pour l'image.")
+                return
+
+            if user in self.blocked_users:
+                connection.privmsg(channel, f"Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
+                return
+
+            self.update_context(channel, user, message)
 
             try:
-                if command == "help":
-                    self.show_help(connection, channel)
-                elif command == "raz":
-                    self.reset_user_context(channel, user)
-                    connection.privmsg(channel, "Conversation oubliée ...")
-                elif command == "save":
-                    self.save_user_context(channel, user, args)
-                elif command == "load":
-                    self.load_user_context(channel, user, args)
-                elif command == "files":
-                    self.list_user_files(channel, user)
-                elif command == "delete":
-                    self.delete_user_context(channel, user, args)
-                elif command == "block" and user == self.admin_user:
-                    self.block_user(args)
-                    connection.privmsg(channel, f"Utilisateur {args} bloqué.")
-                elif command == "unblock" and user == self.admin_user:
-                    self.unblock_user(args)
-                    connection.privmsg(channel, f"Utilisateur {args} débloqué.")
-                elif command == "model":
-                    self.change_model(channel, user, args)
-                elif command == "list-models":
-                    self.list_models(channel)
-                elif command == "image":
-                    self.generate_image(connection, channel, args)
-                else:
-                    if user in self.blocked_users:
-                        connection.privmsg(channel, "Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
-                    else:
-                        self.update_context(channel, user, message)
-                        response = self.generate_response(channel, user, message)
-                        self.send_message_in_chunks(connection, channel, response)
+                response = self.generate_response(channel, user, message)
             except Exception as e:
-                response = handle_exception(e)
-                self.connection.privmsg(channel, response)
+                response = "Une erreur s'est produite lors de la génération de la réponse."
+                self.connection.privmsg(channel, f"Erreur OpenAI: {e}")
 
-    def parse_command(self, message):
-        parts = message.strip().split(" ", 1)
-        command = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
-        return command, args
-
-    def show_help(self, connection, channel):
-        help_message = (
-            "'raz' oublie la conversation , 'save [titre]', 'load [titre]', 'delete [titre]' , "
-            "'files' liste les conversations , 'block [user]' bloque un utilisateur, 'unblock [user]' débloque un utilisateur, "
-            "'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, 'image [prompt]' pour générer une image."
-        )
-        connection.privmsg(channel, help_message)
+            self.send_message_in_chunks(connection, channel, response)
 
     def update_context(self, channel, user, message):
-        context = self.user_contexts.get((channel, user), [])
-        context.append(message + ".\n")
+        if (channel, user) not in self.user_contexts:
+            self.user_contexts[(channel, user)] = []
+        
+        self.user_contexts[(channel, user)].append(message + ".\n")
 
-        if len(context) > self.max_num_line:
-            context = context[-self.max_num_line:]
-
-        self.user_contexts[(channel, user)] = context
+        if len(self.user_contexts[(channel, user)]) > self.max_num_line:
+            context_list = self.user_contexts[(channel, user)]
+            self.user_contexts[(channel, user)] = context_list[1:]
 
     def generate_response(self, channel, user, message):
-        context = "\n".join(self.user_contexts[(channel, user)][:-1])
-        last_message = self.user_contexts[(channel, user)][-1]
+        context = "\n".join(self.user_contexts[(channel, user)][:-1])  # Contexte sans la dernière ligne
+        last_message = self.user_contexts[(channel, user)][-1]  # Dernière ligne du contexte (la nouvelle requête)
 
         prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
         
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt_text}]
-            )
-            generated_text = response.choices[0].message.content.strip()
-            return generated_text
-        except Exception as e:
-            return handle_exception(e)
+        response = openai.ChatCompletion.create(
+            model=self.model,
+            messages=[
+                {"role": "user", "content": prompt_text}
+            ]
+        )
+
+        generated_text = response.choices[0].message.content.strip()
+        return generated_text
 
     def reset_user_context(self, channel, user):
         self.user_contexts[(channel, user)] = ["Bonjour"]
@@ -179,7 +215,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.blocked_users.discard(user)
 
     def change_model(self, channel, user, model):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # Add other valid models as needed
         if model in valid_models:
             self.model = model
             self.connection.privmsg(channel, f"Le modèle a été changé en {model}.")
@@ -187,28 +223,43 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(channel, f"Modèle invalide. Les modèles valides sont: {', '.join(valid_models)}")
 
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]  # List of valid models
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def generate_image(self, connection, channel, prompt):
         try:
-            response = openai.Image.create(prompt=prompt, n=1, size="512x512")
+            response = openai.Image.create(
+                prompt=prompt,
+                n=1,
+                size="512x512"
+            )
             image_url = response['data'][0]['url']
 
-            image_response = requests.get(image_url)
-            image_filename = "YOUR WEBSERVER FOLDER/generated_image.png"
+            # Télécharger l'image depuis l'URL
+            image_data = requests.get(image_url).content
 
-            with open(image_filename, "wb") as image_file:
-                image_file.write(image_response.content)
+            # Sauvegarder l'image temporairement
+            temp_image_path = 'temp_image.png'
+            with open(temp_image_path, 'wb') as f:
+                f.write(image_data)
 
-            web_url = "http://YOUR IP OR URL/generated_image.png"
-            connection.privmsg(channel, web_url)
+            # Télécharger l'image sur imgbb
+            imgbb_response = self.imgbb_client.upload(file=temp_image_path)
+
+            # Supprimer l'image temporaire après le téléchargement
+            os.remove(temp_image_path)
+
+            # Obtenir l'URL courte
+            short_url = imgbb_response.url
+            connection.privmsg(channel, short_url)
         except Timeout as e:
             connection.privmsg(channel, "API call timed out. Try again later.")
         except OpenAIError as e:
             connection.privmsg(channel, f"API call failed. {str(e)}")
+        except json.JSONDecodeError as e:
+            connection.privmsg(channel, f"Erreur de décodage JSON : {str(e)}. La réponse était vide ou mal formée.")
         except Exception as e:
-            connection.privmsg(channel, handle_exception(e))
+            connection.privmsg(channel, f"An unexpected error occurred. {str(e)}")
 
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
