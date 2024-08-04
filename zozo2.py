@@ -196,12 +196,12 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             image_url = response['data'][0]['url']
 
             image_response = requests.get(image_url)
-            image_filename = "/Library/WebServer/Documents/generated_image.png"
+            image_filename = "YOUR WEBSERVER FOLDER/generated_image.png"
 
             with open(image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
 
-            web_url = "http://labynet.fr/generated_image.png"
+            web_url = "http://YOUR IP OR URL/generated_image.png"
             connection.privmsg(channel, web_url)
         except Timeout as e:
             connection.privmsg(channel, "API call timed out. Try again later.")
