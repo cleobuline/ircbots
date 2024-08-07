@@ -8,7 +8,7 @@ import time
 
 class MusicBot(irc.bot.SingleServerIRCBot):
     def __init__(self, server, port, channel, nickname):
-        irc.bot.SingleServerIRCBot.__init__(self, [(server, port)], nickname, nickname)
+        super().__init__([(server, port)], nickname, nickname)
         self.channel = channel
         self.current_title = None
         self.polling_thread = threading.Thread(target=self.poll_current_track)
@@ -19,9 +19,6 @@ class MusicBot(irc.bot.SingleServerIRCBot):
     def on_welcome(self, connection, event):
         connection.join(self.channel)
         self.polling_thread.start()
-
-    def on_join(self, connection, event):
-        connection.privmsg(self.channel, "Bonjour ! Tapez !help pour obtenir la liste des commandes disponibles.")
 
     def on_privmsg(self, connection, event):
         self.do_command(event, event.arguments[0])
@@ -66,6 +63,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             pass  # Do nothing if the command is not recognized
 
     def execute_applescript(self, script):
+        """Executes an AppleScript command and returns the result or an error."""
         try:
             process = subprocess.Popen(['osascript', '-e', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             output, error = process.communicate()
@@ -76,6 +74,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             return None, str(e)
 
     def poll_current_track(self):
+        """Polls the current track information and sends it to the IRC channel if it changes."""
         while True:
             self.polling_active.wait()  # Wait here if polling is paused
             title, error = self.execute_applescript('tell application "Music" to get name of current track')
@@ -87,15 +86,26 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             time.sleep(5)
 
     def handle_title_command(self, connection):
+        """Handles the !title command to fetch and display the current track's title, artist, and album."""
         title, error = self.execute_applescript('tell application "Music" to get name of current track')
-        artist, _ = self.execute_applescript('tell application "Music" to get artist of current track')
-        album, _ = self.execute_applescript('tell application "Music" to get album of current track')
-        if title:
-            connection.privmsg(self.channel, f"TITRE: {title} ARTIST: {artist} ALBUM: {album}")
-        else:
+        if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
+            return
+
+        artist, error = self.execute_applescript('tell application "Music" to get artist of current track')
+        if error:
+            connection.privmsg(self.channel, f"TITRE: {title}, mais erreur pour obtenir l'artiste: {error}")
+            return
+
+        album, error = self.execute_applescript('tell application "Music" to get album of current track')
+        if error:
+            connection.privmsg(self.channel, f"TITRE: {title} ARTIST: {artist}, mais erreur pour obtenir l'album: {error}")
+            return
+
+        connection.privmsg(self.channel, f"TITRE: {title} ARTIST: {artist} ALBUM: {album}")
 
     def handle_next_command(self, connection):
+        """Handles the !next command to skip to the next track."""
         _, error = self.execute_applescript('tell application "Music" to next track')
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -103,6 +113,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "Piste suivante en cours de lecture")
 
     def handle_prev_command(self, connection):
+        """Handles the !prev command to skip to the previous track."""
         _, error = self.execute_applescript('tell application "Music" to previous track')
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -110,6 +121,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "Piste précédente en cours de lecture")
 
     def handle_pause_command(self, connection):
+        """Handles the !pause command to pause the current track."""
         _, error = self.execute_applescript('tell application "Music" to pause')
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -117,6 +129,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "La lecture de la musique a été mise en pause.")
 
     def handle_play_command(self, connection):
+        """Handles the !play command to start playing music."""
         _, error = self.execute_applescript('tell application "Music" to play')
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
@@ -124,6 +137,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "La lecture de la musique a été démarrée.")
 
     def handle_playlist_command(self, connection, command):
+        """Handles the !playlist command to play a specified playlist."""
         playlist_name_match = re.search(r'!playlist\s+(.+)', command)
         if playlist_name_match:
             playlist_name = playlist_name_match.group(1)
@@ -150,6 +164,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
                 connection.privmsg(self.channel, f"Aucune playlist trouvée proche de : {playlist_name}")
 
     def handle_track_command(self, connection, command):
+        """Handles the !track command to search for and play a specified track."""
         track_name_partial = command.split('!track', 1)[1].strip()
         script = (
             f'tell application "Music"\n'
@@ -168,6 +183,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, f"Lecture de la piste contenant : {track_name_partial}")
 
     def handle_genre_command(self, connection, command):
+        """Handles the !genre command to create and play a temporary playlist with all tracks of a specified genre."""
         genre_name = command.split('!genre', 1)[1].strip()
         script = (
             f'set genre_name to "{genre_name}"\n'
@@ -190,13 +206,15 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
         else:
-            connection.privmsg(self.channel, f"Playlist temporaire créée avec les pistes du genre {genre_name}")
+            connection.privmsg(self.channel, f"Lecture de tous les morceaux du genre : {genre_name}")
 
     def handle_artist_command(self, connection, command):
+        """Handles the !artist command to create and play a temporary playlist with all tracks of a specified artist."""
         artist_name = command.split('!artist', 1)[1].strip()
         script = (
+            f'set artist_name to "{artist_name}"\n'
             f'tell application "Music"\n'
-            f'set artist_tracks to search playlist "général" for "{artist_name}" only artists\n'
+            f'set artist_tracks to every track of playlist "général" whose artist is artist_name\n'
             f'if artist_tracks is not {{}} then\n'
             f'    try\n'
             f'        delete every playlist whose name is "temp"\n'
@@ -214,62 +232,41 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
         else:
-            connection.privmsg(self.channel, f"Playlist temporaire créée avec les pistes de {artist_name}")
+            connection.privmsg(self.channel, f"Lecture de tous les morceaux de l'artiste : {artist_name}")
 
     def handle_say_command(self, connection, command):
-        text_to_say = command.split(' ', 1)[1]
-        if not text_to_say:
-            connection.privmsg(self.channel, "Erreur: Message manquant.")
-            return
-        
-        set_volume_script = 'tell application "Music" to set sound volume to 50'
-        _, error = self.execute_applescript(set_volume_script)
-        if error:
-            connection.privmsg(self.channel, f"Erreur lors de la modification du volume : {error}")
-        else:
-            subprocess.run(['say', text_to_say])
-            set_volume_script = 'tell application "Music" to set sound volume to 100'
-            _, error = self.execute_applescript(set_volume_script)
-            if error:
-                connection.privmsg(self.channel, f"Erreur lors de la modification du volume : {error}")
+        """Handles the !say command to repeat the given message in the channel."""
+        message = command.split('!say', 1)[1].strip()
+        connection.privmsg(self.channel, message)
 
     def handle_help_command(self, connection):
         help_message = (
             "Commandes disponibles : !title, !next, !prev, !pause, !play, !playlist <nom>, !track <nom>, "
-            "!genre <nom>, !artist <nom>, !say <message>, !polloff, !pollon"
+            "!genre <nom>, !artist <nom>, !say <message>, !polloff affichage des titre en live , !pollon fin de l'affichage des titres'"
         )
         connection.privmsg(self.channel, help_message)
 
     def handle_polloff_command(self, connection):
-        self.polling_active.clear()
-        connection.privmsg(self.channel, "Polling arrêté.")
+        """Handles the !polloff command to stop the polling of current track information."""
+        if self.polling_active.is_set():
+            self.polling_active.clear()
+            connection.privmsg(self.channel, "La mise à jour automatique des informations de piste a été désactivée.")
+        else:
+            connection.privmsg(self.channel, "La mise à jour automatique des informations de piste est déjà désactivée.")
 
     def handle_pollon_command(self, connection):
-        self.polling_active.set()
-        connection.privmsg(self.channel, "Polling démarré.")
+        """Handles the !pollon command to start the polling of current track information."""
+        if not self.polling_active.is_set():
+            self.polling_active.set()
+            connection.privmsg(self.channel, "La mise à jour automatique des informations de piste a été activée.")
+        else:
+            connection.privmsg(self.channel, "La mise à jour automatique des informations de piste est déjà activée.")
 
-    def find_partial_playlist(self, partial_name, playlists):
-        partial_name_lower = partial_name.lower()
-        return [playlist for playlist in playlists if partial_name_lower in playlist.lower()]
-
-    def stop_polling_thread(self):
-        self.polling_thread_running = False
-        self.polling_active.set()  # Ensure the polling thread exits if waiting
-        self.polling_thread.join()
-
-    def start(self):
-        self.polling_thread_running = True
-        super().start()
-
-    def stop(self):
-        self.stop_polling_thread()
-        super().disconnect("Bot is stopping")
+    def find_partial_playlist(self, partial_name, all_playlists):
+        """Finds playlists that partially match the given name."""
+        return [playlist for playlist in all_playlists if partial_name.lower() in playlist.lower()]
 
 
 if __name__ == "__main__":
-    server = "labynet.fr"
-    port = 6667
-    channel = "#labynet"
-    nickname = "title"
-    bot = MusicBot(server, port, channel, nickname)
+    bot = MusicBot("labynet.fr", 6667, "#labynet", "title")
     bot.start()
