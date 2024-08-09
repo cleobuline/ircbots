@@ -119,12 +119,12 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
                 connection.privmsg(original_nick, "You are not registered.")
 
 def main():
-    server = "labynet.fr"  # Replace with the appropriate IRC server
+    server = "irc.sample.net"  # Replace with the appropriate IRC server
     port = 6667
     channel = "#labynet"  # Replace with the appropriate channel
     nickname = "gardien"
-    oper_user = "patricia"  # Operator username
-    oper_pass = "libellule"  # Operator password
+    oper_user = "operator_username_here"  # Operator username
+    oper_pass = "operator_password_here"  # Operator password
 
     bot = RegisterBot(channel, nickname, server, oper_user, oper_pass, port)
     bot_thread = threading.Thread(target=bot.start)
