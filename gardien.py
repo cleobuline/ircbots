@@ -189,8 +189,8 @@ def main():
     port = 6667
     channel = "#labynet"  # Remplacez par le canal approprié
     nickname = "gardien"
-    oper_user = "patricia"  # Nom d'utilisateur opérateur
-    oper_pass = "libellule"  # Mot de passe opérateur
+    oper_user = "oper_nick_HERE"  # Nom d'utilisateur opérateur
+    oper_pass = "oper_pass_HERE"  # Mot de passe opérateur
 
     bot = RegisterBot(channel, nickname, server, oper_user, oper_pass, port)
     bot_thread = threading.Thread(target=bot.start)
