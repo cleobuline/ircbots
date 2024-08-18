@@ -8,7 +8,6 @@ import signal
 import sys
 
 # Configurer le logging de base
-logging.basicConfig(level=logging.DEBUG)
 
 # Dictionnaires globaux pour stocker les informations des utilisateurs
 registered_users = {}  # Cela stocke les mots de passe hachés et les indices
@@ -20,7 +19,6 @@ def save_registered_users():
         with open("registered_users.txt", "w") as f:
             for nick, (hashed_password, hint) in registered_users.items():
                 f.write(f"{nick}:{hashed_password}:{hint}\n")
-        logging.info("Utilisateurs enregistrés sauvegardés avec succès.")
     except IOError as e:
         logging.error(f"Erreur lors de la sauvegarde des utilisateurs enregistrés : {e}")
 
@@ -32,7 +30,6 @@ def load_registered_users():
             for line in f:
                 nick, hashed_password, hint = line.strip().split(":")
                 registered_users[nick] = (hashed_password, hint)
-        logging.info("Utilisateurs enregistrés chargés avec succès.")
     except FileNotFoundError:
         logging.warning("Le fichier des utilisateurs enregistrés est introuvable. Création d'un nouveau fichier.")
     except IOError as e:
@@ -58,26 +55,22 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
         self.oper_pass = oper_pass
 
     def on_welcome(self, connection, event):
-        logging.info("Connecté au serveur et rejoint le canal.")
         connection.send_raw(f"OPER {self.oper_user} {self.oper_pass}")
         connection.join(self.channel)
         connection.mode(self.channel, f"+o {self._nickname}")
         load_registered_users()
-        logging.info(f"Bot a rejoint le canal {self.channel} en tant que {self._nickname}.")
 
     def on_disconnect(self, connection, event):
-        logging.warning("Bot a été déconnecté du serveur.")
         while True:
             try:
                 self.connection.reconnect()
-                break
+                break;
             except irc.client.ServerConnectionError:
                 logging.warning("Échec de la reconnexion, nouvelle tentative dans 5 secondes...")
                 time.sleep(5)
 
     def on_join(self, connection, event):
         nick = normalize_nick(event.source.split('!')[0])
-        logging.debug(f"L'utilisateur {nick} a rejoint le canal.")
         if nick in registered_users and nick not in authenticated_users:
             authenticated_users[nick] = False
             connection.privmsg(nick, "Bienvenue de nouveau ! Veuillez vous authentifier en fournissant votre mot de passe avec /msg gardien !auth <mot_de_passe>")
@@ -87,7 +80,6 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
         message = event.arguments[0].strip()
         nick = normalize_nick(original_nick)
 
-        logging.debug(f"Message privé reçu de {original_nick}: {message}")
 
         help_messages = [
             "Commandes:", 
@@ -95,6 +87,7 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
             "!auth <mot_de_passe> - Authentification",
             "!unauth - Désauthentification",
             "!unregister - Désinscription.",
+            "!pwd <nouveau_mot_de_passe> <confirmation_nouveau_mot_de_passe> - Changer de mot de passe",
             "!help - Aide."
         ]
 
@@ -104,27 +97,23 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
 
         elif message.startswith("!register"):
             if nick in registered_users:
-                logging.debug(f"L'utilisateur {nick} est déjà enregistré.")
                 connection.privmsg(original_nick, "Vous êtes déjà enregistré. Veuillez utiliser !auth pour vous authentifier.")
             else:
                 try:
                     parts = message.split()
                     if len(parts) != 3:
                         connection.privmsg(original_nick, "Utilisation : !register <mot_de_passe> <confirmation_mot_de_passe>")
-                        logging.debug(f"Commande !register mal formée : {message}")
                         return
 
                     _, password, confirm_password = parts
                     if password == confirm_password:
                         hashed_password = hash_password(password)
                         hint = generate_hint(password)
-                        logging.debug(f"Enregistrement de l'utilisateur {nick} avec le mot de passe haché : {hashed_password} et indice : {hint}")
                         registered_users[nick] = (hashed_password, hint)
                         save_registered_users()
                         connection.privmsg(original_nick, "Vous avez été enregistré avec succès !")
                     else:
                         connection.privmsg(original_nick, "Les mots de passe ne correspondent pas.")
-                        logging.debug(f"Les mots de passe ne correspondent pas pour l'utilisateur {nick}.")
                 except ValueError:
                     connection.privmsg(original_nick, "Utilisation : !register <mot_de_passe> <confirmation_mot_de_passe>")
 
@@ -137,12 +126,10 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
                     parts = message.split()
                     if len(parts) != 2:
                         connection.privmsg(original_nick, "Utilisation : !auth <mot_de_passe>")
-                        logging.debug(f"Commande !auth mal formée : {message}")
                         return
 
                     _, password = parts
                     hashed_password = hash_password(password)
-                    logging.debug(f"Authentification de l'utilisateur {nick} avec le mot de passe haché : {hashed_password}")
                     stored_hashed_password, stored_hint = registered_users.get(nick, (None, None))
 
                     if stored_hashed_password == hashed_password:
@@ -178,6 +165,29 @@ class RegisterBot(irc.bot.SingleServerIRCBot):
             else:
                 connection.privmsg(original_nick, "Vous n'êtes pas enregistré, donc vous ne pouvez pas vous désinscrire.")
 
+        elif message.startswith("!pwd"):
+            if nick in authenticated_users and authenticated_users[nick]:
+                try:
+                    parts = message.split()
+                    if len(parts) != 3:
+                        connection.privmsg(original_nick, "Utilisation : !psw <nouveau_mot_de_passe> <confirmation_nouveau_mot_de_passe>")
+                        return
+
+                    _, new_password, confirm_new_password = parts
+                    if new_password == confirm_new_password:
+                        new_hashed_password = hash_password(new_password)
+                        new_hint = generate_hint(new_password)
+                        registered_users[nick] = (new_hashed_password, new_hint)
+                        save_registered_users()
+                        connection.privmsg(original_nick, "Votre mot de passe a été changé avec succès !")
+                    else:
+                        connection.privmsg(original_nick, "Les mots de passe ne correspondent pas.")
+
+                except ValueError:
+                    connection.privmsg(original_nick, "Utilisation : !psw <nouveau_mot_de_passe> <confirmation_nouveau_mot_de_passe>")
+            else:
+                connection.privmsg(original_nick, "Vous devez être authentifié pour changer votre mot de passe.")
+
 def signal_handler(sig, frame):
     logging.info("Signal reçu, arrêt du bot.")
     sys.exit(0)
@@ -189,8 +199,8 @@ def main():
     port = 6667
     channel = "#labynet"  # Remplacez par le canal approprié
     nickname = "gardien"
-    oper_user = "oper_nick_HERE"  # Nom d'utilisateur opérateur
-    oper_pass = "oper_pass_HERE"  # Mot de passe opérateur
+    oper_user = "ooer user name "  # Nom d'utilisateur opérateur
+    oper_pass = "oper user password"  # Mot de passe opérateur
 
     bot = RegisterBot(channel, nickname, server, oper_user, oper_pass, port)
     bot_thread = threading.Thread(target=bot.start)
