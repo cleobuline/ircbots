@@ -226,12 +226,12 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         image_url = response['data'][0]['url']
 
         image_response = requests.get(image_url)
-        image_filename = "/var/www/html/generated_image.png"
+        image_filename = "/PUT HERE YOUR SERVER FOLDER/generated_image.png"
 
         with open(image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
 
-        web_url = "http://labynet.fr/generated_image.png"
+        web_url = "http://PUT HERE YOUR URL /generated_image.png"
         connection.privmsg(channel, web_url)
 
     def send_message_in_chunks(self, connection, target, message):
