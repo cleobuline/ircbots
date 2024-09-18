@@ -5,7 +5,7 @@ import os
 import requests
 import pyshorteners
 import imgbbpy
-import time 
+import time
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -80,6 +80,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.generate_image_tiny(connection, channel, args)
             elif command == "imgbb":
                 self.generate_image_imgbb(connection, channel, args)
+            elif command == "vision":
+                self.generate_image_description(connection, channel, args)
             else:
                 if user in self.blocked_users:
                     connection.privmsg(channel, "Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
@@ -172,7 +174,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.blocked_users.discard(user)
 
     def change_model(self, channel, user, model):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
+        valid_models =  ["gpt-3.5-turbo", "gpt-4", "gpt-4o","gpt-4o-2024-08-06" ,"gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
         if model in valid_models:
             self.model = model
             self.connection.privmsg(channel, f"Le modèle a été changé en {model}.")
@@ -180,59 +182,109 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(channel, f"Modèle invalide. Les modèles valides sont: {', '.join(valid_models)}.")
 
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o","gpt-4o-2024-08-06" ,"gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
         self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
 
     def generate_image_tiny(self, connection, channel, prompt):
-        response = openai.Image.create(
-            prompt=prompt,
-            n=1,
-            size="512x512"
-        )
-        image_url = response['data'][0]['url']
-        shortener = pyshorteners.Shortener()
-        short_url = shortener.tinyurl.short(image_url)
-        connection.privmsg(channel, short_url)
+        try:
+            response = openai.Image.create(
+                prompt=prompt,
+                n=1,
+                size="512x512"
+            )
+            image_url = response['data'][0]['url']
+            shortener = pyshorteners.Shortener()
+            short_url = shortener.tinyurl.short(image_url)
+            connection.privmsg(channel, short_url)
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
+        except Exception as e:
+            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
 
     def generate_image_imgbb(self, connection, channel, prompt):
-        response = openai.Image.create(
-            prompt=prompt,
-            n=1,
-            size="512x512"
-        )
-        image_url = response['data'][0]['url']
+        try:
+            response = openai.Image.create(
+                prompt=prompt,
+                n=1,
+                size="512x512"
+            )
+            image_url = response['data'][0]['url']
 
-        # Télécharger l'image
-        image_data = requests.get(image_url).content
+            # Télécharger l'image
+            image_data = requests.get(image_url).content
 
-        # Enregistrer l'image temporairement
-        temp_image_path = 'temp_image.png'
-        with open(temp_image_path, 'wb') as f:
-            f.write(image_data)
+            # Enregistrer l'image temporairement
+            temp_image_path = 'temp_image.png'
+            with open(temp_image_path, 'wb') as f:
+                f.write(image_data)
 
-        # Uploader l'image sur imgbb
-        imgbb_response = self.imgbb_client.upload(file=temp_image_path)
+            # Uploader l'image sur imgbb
+            imgbb_response = self.imgbb_client.upload(file=temp_image_path)
 
-        # Supprimer l'image temporaire
-        os.remove(temp_image_path)
+            # Supprimer l'image temporaire
+            os.remove(temp_image_path)
 
-        # Obtenir l'URL courte
-        short_url = imgbb_response.url
-        connection.privmsg(channel, short_url)
+            # Obtenir l'URL courte
+            short_url = imgbb_response.url
+            connection.privmsg(channel, short_url)
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur de téléchargement de l'image: {str(e)}")
+        except imgbbpy.exceptions.ImgBBError as e:
+            connection.privmsg(channel, f"Erreur lors du téléchargement sur ImgBB: {str(e)}")
+        except Exception as e:
+            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
 
     def generate_image_local(self, connection, channel, prompt):
+        try:
+            response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
+            image_url = response['data'][0]['url']
 
-        response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
-        image_url = response['data'][0]['url']
+            image_response = requests.get(image_url)
+            image_filename = "/var/www/html/generated_image.png"
 
-        image_response = requests.get(image_url)
-        image_filename = "/PUT HERE YOUR SERVER FOLDER/generated_image.png"
-
-        with open(image_filename, "wb") as image_file:
+            with open(image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
 
-        web_url = "http://PUT HERE YOUR URL /generated_image.png"
-        connection.privmsg(channel, web_url)
+            web_url = "http://labynet.fr/generated_image.png"
+            connection.privmsg(channel, web_url)
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur de téléchargement de l'image: {str(e)}")
+        except Exception as e:
+            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
+            
+    def generate_image_description(self, connection, channel, image_url):
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Décrit moi cette image en détails"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_url},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=300,
+            )
+
+            description = response.choices[0].message["content"]
+            self.send_message_in_chunks(connection, channel, f"Description de l'image : {description}")
+
+
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur lors de l'appel à l'API OpenAI: {str(e)}")
+        except Exception as e:
+            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
+
+
 
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
