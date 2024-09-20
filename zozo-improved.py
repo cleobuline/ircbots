@@ -101,7 +101,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         "'delete [titre]', 'files' liste les conversations, 'block [user]' "
                         "bloque un utilisateur, 'unblock [user]' débloque un utilisateur, "
                         "'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, "
-                        "'image [prompt]' pour générer une image.")
+                        "'image [prompt]' pour générer une image., 'vision [image URL]' pour décrire une image.")
         connection.privmsg(channel, help_message)
 
     def update_context(self, channel, user, message):
