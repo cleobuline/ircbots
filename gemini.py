@@ -1,11 +1,12 @@
 import os
+import json
 import irc.bot
 import google.generativeai as genai
 import re
 import time
 
 # Remplacez par votre clé API Google Generative AI
-os.environ["API_KEY"] = "GOOGLE GEMINI API KEY"
+os.environ["API_KEY"] = "API_KEY"
 genai.configure(api_key=os.environ["API_KEY"])
 
 # Configuration du serveur IRC
@@ -46,36 +47,74 @@ class GeminiBot(irc.bot.SingleServerIRCBot):
         self.channel = channel
         self.nickname = nickname
         self.model = model
+        self.contexts = {}  # Dictionnaire pour gérer les contextes des utilisateurs
         irc.bot.SingleServerIRCBot.__init__(self, [(SERVER, PORT)], self.nickname, self.nickname)
+
+    # Méthode pour charger le contexte à partir d'un fichier
+    def load_context(self):
+        try:
+            with open('context.json', 'r') as f:
+                self.contexts = json.load(f)
+        except FileNotFoundError:
+            self.contexts = {}  # Si le fichier n'existe pas, initialiser un dictionnaire vide
+
+    # Méthode pour sauvegarder le contexte dans un fichier
+    def save_context(self):
+        with open('context.json', 'w') as f:
+            json.dump(self.contexts, f)
 
     # Action à effectuer lors de la connexion au serveur IRC
     def on_welcome(self, c, e):
         c.join(self.channel)
         send_message_in_chunks(c, self.channel, f"{self.nickname} est prêt à recevoir des commandes !")
+        self.load_context()  # Charger le contexte à la connexion
 
     # Réception des messages publics dans le canal
     def on_pubmsg(self, c, e):
         if e.arguments[0].startswith(f"{self.nickname}: "):
             command = e.arguments[0][len(self.nickname) + 2:].strip()
+            user = e.source.nick
 
             if command == "quit":
                 c.quit("Le bot se déconnecte...")
+                self.save_context()  # Sauvegarder le contexte avant de quitter
                 exit()
+            elif command.startswith("save"):
+                self.save_context()
+                send_message_in_chunks(c, self.channel, "Contexte sauvegardé.")
+            elif command.startswith("load"):
+                self.load_context()
+                send_message_in_chunks(c, self.channel, "Contexte chargé.")
+            elif command.startswith("raz"):
+                # Remettre à zéro le contexte de l'utilisateur
+                self.contexts[user] = []
+                send_message_in_chunks(c, self.channel, f"Contexte de {user} réinitialisé.")
             else:
+                context = self.contexts.get(user, [])
                 # Traiter la commande avec l'API Google Generative AI
                 try:
-                    response = self.model.generate_content([command])
+                    # Combiner le contexte avec la commande
+                    full_input = ' '.join(context + [command])
+                    response = self.model.generate_content([full_input])
                     send_message_in_chunks(c, self.channel, response.text)  # Envoi de la réponse en morceaux
+                    # Mettre à jour le contexte
+                    self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]  # Ajouter tout le contexte
                 except Exception as err:
                     send_message_in_chunks(c, self.channel, "Erreur : Impossible de générer une réponse.")
 
     # Réception des messages privés
     def on_privmsg(self, c, e):
         command = e.arguments[0].strip()
+        user = e.source.nick
+        context = self.contexts.get(user, [])
 
         try:
-            response = self.model.generate_content([command])
+            # Combiner le contexte avec la commande
+            full_input = ' '.join(context + [command])
+            response = self.model.generate_content([full_input])
             send_message_in_chunks(c, e.source.nick, response.text)  # Envoi de la réponse en morceaux
+            # Mettre à jour le contexte
+            self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]  # Ajouter tout le contexte
         except Exception as err:
             send_message_in_chunks(c, e.source.nick, "Erreur : Impossible de générer une réponse.")
 
