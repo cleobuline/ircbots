@@ -6,7 +6,7 @@ import re
 import time
 
 # Remplacez par votre clé API Google Generative AI
-os.environ["API_KEY"] = "API_KEY"
+os.environ["API_KEY"] = "GOOGLE API KEY"
 genai.configure(api_key=os.environ["API_KEY"])
 
 # Configuration du serveur IRC
