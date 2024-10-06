@@ -6,7 +6,7 @@ import re
 import time
 
 # Remplacez par votre clé API Google Generative AI
-os.environ["API_KEY"] = "GOOGLE API KEY"
+os.environ["API_KEY"] = "TEXT GENERATION API KEY"
 genai.configure(api_key=os.environ["API_KEY"])
 
 # Configuration du serveur IRC
@@ -23,23 +23,18 @@ def send_message_in_chunks(connection, target, message):
     lines = message.split('\n')
     for line in lines:
         while line:
-            # Vérifiez si la ligne est plus longue que la limite
             if len(line.encode('utf-8')) > 392:
-                # Trouver le dernier espace dans la limite
                 last_space_index = line[:392].rfind(' ')
                 if last_space_index == -1:
-                    # Si pas d'espace trouvé, couper à la limite
                     connection.privmsg(target, line[:392].strip())
                     line = line[392:]
                 else:
-                    # Envoyer jusqu'à l'espace trouvé
                     connection.privmsg(target, line[:last_space_index].strip())
                     line = line[last_space_index:].strip()
             else:
-                # Si la ligne est dans la limite, envoyer le reste
                 connection.privmsg(target, line.strip())
                 line = ''
-            time.sleep(0.5)  # Pause pour éviter de flooder le serveur
+            time.sleep(0.5)
 
 # Classe du bot IRC
 class GeminiBot(irc.bot.SingleServerIRCBot):
@@ -47,76 +42,121 @@ class GeminiBot(irc.bot.SingleServerIRCBot):
         self.channel = channel
         self.nickname = nickname
         self.model = model
-        self.contexts = {}  # Dictionnaire pour gérer les contextes des utilisateurs
+        self.contexts = {}
         irc.bot.SingleServerIRCBot.__init__(self, [(SERVER, PORT)], self.nickname, self.nickname)
 
-    # Méthode pour charger le contexte à partir d'un fichier
-    def load_context(self):
-        try:
-            with open('context.json', 'r') as f:
-                self.contexts = json.load(f)
-        except FileNotFoundError:
-            self.contexts = {}  # Si le fichier n'existe pas, initialiser un dictionnaire vide
+    # Méthode pour obtenir le nom de fichier pour un utilisateur et un titre
+    def get_context_filename(self, user, title):
+        return os.path.join("gemini-conversations", f"{user}_{title}.json")
 
-    # Méthode pour sauvegarder le contexte dans un fichier
-    def save_context(self):
-        with open('context.json', 'w') as f:
-            json.dump(self.contexts, f)
+    # Méthode pour charger le contexte d'un utilisateur à partir d'un fichier
+    def load_context(self, connection, user, title):
+        filename = self.get_context_filename(user, title)
+        try:
+            with open(filename, 'r') as f:
+                self.contexts[user] = json.load(f)
+            send_message_in_chunks(connection, self.channel, f"Le fichier '{filename}' a été chargé avec succès pour {user}.")
+        except FileNotFoundError:
+            self.contexts[user] = []
+            send_message_in_chunks(connection, self.channel, f"Aucun fichier de contexte trouvé pour {user} sous le titre '{title}', contexte initialisé.")
+
+    # Méthode pour sauvegarder le contexte d'un utilisateur dans un fichier
+    def save_context(self, connection, user, title):
+        filename = self.get_context_filename(user, title)
+        with open(filename, 'w') as f:
+            json.dump(self.contexts.get(user, []), f)
+        send_message_in_chunks(connection, self.channel, f"Contexte de {user} sauvegardé sous le titre '{title}'.")
+
+    # Méthode pour lister les fichiers de conversations dans gemini-conversations
+    def list_conversations(self, connection, target):
+        conversations_folder = 'gemini-conversations'
+        try:
+            files = os.listdir(conversations_folder)
+            # Filtrer pour ne garder que les fichiers JSON et extraire les titres
+            titles = sorted(set([f.split('_', 1)[1].replace('.json', '') for f in files if f.endswith('.json')]))
+
+            if titles:
+                send_message_in_chunks(connection, target, "Liste des conversations (par ordre alphanumérique) :")
+                for title in titles:
+                    send_message_in_chunks(connection, target, f"- {title}")
+            else:
+                send_message_in_chunks(connection, target, "Aucune conversation trouvée.")
+        except FileNotFoundError:
+            send_message_in_chunks(connection, target, "Le dossier gemini-conversations n'existe pas.")
+
+    # Méthode pour supprimer un fichier de conversation
+    def delete_conversation(self, connection, target, title):
+        conversations_folder = 'gemini-conversations'
+        files = os.listdir(conversations_folder)
+
+        # Trouver le fichier correspondant au titre fourni
+        for file in files:
+            if file.endswith(".json") and file.split('_', 1)[1].replace('.json', '') == title:
+                file_path = os.path.join(conversations_folder, file)
+                try:
+                    os.remove(file_path)
+                    send_message_in_chunks(connection, target, f"Le fichier de conversation '{title}' a été supprimé.")
+                except Exception as e:
+                    send_message_in_chunks(connection, target, f"Erreur lors de la suppression du fichier '{title}': {e}")
+                return
+        
+        send_message_in_chunks(connection, target, f"Aucun fichier de conversation correspondant à '{title}' n'a été trouvé.")
 
     # Action à effectuer lors de la connexion au serveur IRC
-    def on_welcome(self, c, e):
-        c.join(self.channel)
-        send_message_in_chunks(c, self.channel, f"{self.nickname} est prêt à recevoir des commandes !")
-        self.load_context()  # Charger le contexte à la connexion
+    def on_welcome(self, connection, e):
+        connection.join(self.channel)
+        send_message_in_chunks(connection, self.channel, f"{self.nickname} est prêt à recevoir des commandes !")
 
     # Réception des messages publics dans le canal
-    def on_pubmsg(self, c, e):
+    def on_pubmsg(self, connection, e):
         if e.arguments[0].startswith(f"{self.nickname}: "):
             command = e.arguments[0][len(self.nickname) + 2:].strip()
             user = e.source.nick
 
-            if command == "quit":
-                c.quit("Le bot se déconnecte...")
-                self.save_context()  # Sauvegarder le contexte avant de quitter
+            if command == "list":
+                self.list_conversations(connection, self.channel)
+            elif command.startswith("delete"):
+                title = command.split(" ", 1)[1] if len(command.split()) > 1 else None
+                if title:
+                    self.delete_conversation(connection, self.channel, title)
+                else:
+                    send_message_in_chunks(connection, self.channel, "Veuillez spécifier un fichier de conversation à supprimer.")
+            elif command == "quit":
+                connection.quit("Le bot se déconnecte...")
+                self.save_context(connection, user, "default")
                 exit()
             elif command.startswith("save"):
-                self.save_context()
-                send_message_in_chunks(c, self.channel, "Contexte sauvegardé.")
+                title = command.split(" ", 1)[1] if len(command.split()) > 1 else "default"
+                self.save_context(connection, user, title)
             elif command.startswith("load"):
-                self.load_context()
-                send_message_in_chunks(c, self.channel, "Contexte chargé.")
+                title = command.split(" ", 1)[1] if len(command.split()) > 1 else "default"
+                self.load_context(connection, user, title)
             elif command.startswith("raz"):
-                # Remettre à zéro le contexte de l'utilisateur
                 self.contexts[user] = []
-                send_message_in_chunks(c, self.channel, f"Contexte de {user} réinitialisé.")
+                send_message_in_chunks(connection, self.channel, f"Contexte de {user} réinitialisé.")
             else:
                 context = self.contexts.get(user, [])
-                # Traiter la commande avec l'API Google Generative AI
                 try:
-                    # Combiner le contexte avec la commande
                     full_input = ' '.join(context + [command])
                     response = self.model.generate_content([full_input])
-                    send_message_in_chunks(c, self.channel, response.text)  # Envoi de la réponse en morceaux
-                    # Mettre à jour le contexte
-                    self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]  # Ajouter tout le contexte
+                    send_message_in_chunks(connection, self.channel, response.text)
+                    self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]
                 except Exception as err:
-                    send_message_in_chunks(c, self.channel, "Erreur : Impossible de générer une réponse.")
+                    send_message_in_chunks(connection, self.channel, "Erreur : Impossible de générer une réponse.")
 
     # Réception des messages privés
-    def on_privmsg(self, c, e):
+    def on_privmsg(self, connection, e):
         command = e.arguments[0].strip()
         user = e.source.nick
         context = self.contexts.get(user, [])
 
         try:
-            # Combiner le contexte avec la commande
             full_input = ' '.join(context + [command])
             response = self.model.generate_content([full_input])
-            send_message_in_chunks(c, e.source.nick, response.text)  # Envoi de la réponse en morceaux
-            # Mettre à jour le contexte
-            self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]  # Ajouter tout le contexte
+            send_message_in_chunks(connection, e.source.nick, response.text)
+            self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]
         except Exception as err:
-            send_message_in_chunks(c, e.source.nick, "Erreur : Impossible de générer une réponse.")
+            send_message_in_chunks(connection, e.source.nick, "Erreur : Impossible de générer une réponse.")
 
 # Lancement du bot
 if __name__ == "__main__":
