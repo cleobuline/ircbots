@@ -6,7 +6,7 @@ import re
 import time
 
 # Remplacez par votre clé API Google Generative AI
-os.environ["API_KEY"] = "API KEY"
+os.environ["API_KEY"] = "TEXT GENERATIO? API KEY"
 genai.configure(api_key=os.environ["API_KEY"])
 
 # Configuration du serveur IRC
@@ -103,17 +103,29 @@ class GeminiBot(irc.bot.SingleServerIRCBot):
         send_message_in_chunks(connection, target, f"Aucun fichier de conversation correspondant à '{title}' n'a été trouvé.")
 
     # Action à effectuer lors de la connexion au serveur IRC
-    def on_welcome(self, connection, e):
+    def on_welcome(self, connection, event):
         connection.join(self.channel)
         send_message_in_chunks(connection, self.channel, f"{self.nickname} est prêt à recevoir des commandes !")
 
     # Réception des messages publics dans le canal
-    def on_pubmsg(self, connection, e):
-        if e.arguments[0].startswith(f"{self.nickname}: "):
-            command = e.arguments[0][len(self.nickname) + 2:].strip()
-            user = e.source.nick
+    def on_pubmsg(self, connection, event):
+        if event.arguments[0].startswith(f"{self.nickname}: "):
+            command = event.arguments[0][len(self.nickname) + 2:].strip()
+            user = event.source.nick
 
-            if command == "list":
+            if command == "help":
+                help_message = """
+                Commandes disponibles :
+                - list : Lister les conversations sauvegardées
+                - delete <titre> : Supprimer une conversation
+                - save <titre> : Sauvegarder le contexte sous un titre donné
+                - load <titre> : Charger le contexte d'une conversation
+                - raz : Réinitialiser le contexte
+                - quit : Quitter le bot
+                - help : Afficher ce message d'aide
+                """
+                send_message_in_chunks(connection, self.channel, help_message)
+            elif command == "list":
                 self.list_conversations(connection, self.channel)
             elif command.startswith("delete"):
                 title = command.split(" ", 1)[1] if len(command.split()) > 1 else None
@@ -145,27 +157,27 @@ class GeminiBot(irc.bot.SingleServerIRCBot):
                     send_message_in_chunks(connection, self.channel, "Erreur : Impossible de générer une réponse.")
 
     # Réception des messages privés
-    def on_privmsg(self, connection, e):
-        command = e.arguments[0].strip()
-        user = e.source.nick
+    def on_privmsg(self, connection, event):
+        command = event.arguments[0].strip()
+        user = event.source.nick
         context = self.contexts.get(user, [])
 
         try:
             full_input = ' '.join(context + [command])
             response = self.model.generate_content([full_input])
-            send_message_in_chunks(connection, e.source.nick, response.text)
+            send_message_in_chunks(connection, event.source.nick, response.text)
             self.contexts[user] = context + [f"Nous avons parlé de : {command}. Réponse : {response.text}"]
         except Exception as err:
-            send_message_in_chunks(connection, e.source.nick, "Erreur : Impossible de générer une réponse.")
+            send_message_in_chunks(connection, event.source.nick, "Erreur : Impossible de générer une réponse.")
 
     # Action à effectuer lors de la déconnexion d'un utilisateur
-    def on_part(self, connection, e):
-        user = e.source.nick
+    def on_part(self, connection, event):
+        user = event.source.nick
         self.save_context(connection, user, "default")
 
     # Action à effectuer lors de la reconnexion d'un utilisateur
-    def on_join(self, connection, e):
-        user = e.source.nick
+    def on_join(self, connection, event):
+        user = event.source.nick
         self.load_context(connection, user, "default")
 
 # Lancement du bot
