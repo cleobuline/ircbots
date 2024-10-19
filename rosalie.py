@@ -4,22 +4,36 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import urllib.parse
+import time  # Import pour temporiser la reconnexion
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "your google api key here "
-        self.server = "irc.europnet.org"
+        self.api_key = "your google api"
+        self.server = "your irc server "
         self.port = 6667
-        self.channel = "#vortex"
+        self.channel = "#your channel"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
         self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        self.reconnect_delay = 5  # Temps d'attente en secondes avant de réessayer la reconnexion
 
         irc.bot.SingleServerIRCBot.__init__(self, [(self.server, self.port)], self.nickname, self.realname)
 
     def on_welcome(self, connection, event):
         connection.join(self.channel)
+
+    def on_disconnect(self, connection, event):
+        print("Disconnected from server. Attempting to reconnect...")
+        while True:
+            try:
+                time.sleep(self.reconnect_delay)  # Attendre avant de réessayer
+                self.connection.reconnect()
+                print("Reconnected to server.")
+                break
+            except Exception as e:
+                print(f"Reconnection failed: {e}")
+                time.sleep(self.reconnect_delay)  # Réessayer après une pause
 
     def on_pubmsg(self, connection, event):
         try:
@@ -36,8 +50,6 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 
                 if title:
                     connection.privmsg(self.channel, f"Title: {title}")
-                else:
-                    connection.privmsg(self.channel, f"Could not retrieve title for: {url}")
 
             if message.startswith('!yt'):
                 query = message.split('!yt')[1].strip()
@@ -79,22 +91,35 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
     def search_google(self, query, connection):
         try:
             headers = {'User-Agent': self.user_agent}
-            url = f"https://www.google.com/search?q={query}"
+            url = f"https://www.google.fr/search?q={query}&hl=fr&gl=fr&lr=lang_fr"
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             search_results = soup.find_all('div', class_='tF2Cxc')
             descriptions = soup.find_all('div', class_='VwiC3b')
+
             if search_results:
                 url_tag = search_results[0].find('a', href=True)
                 if url_tag:
                     actual_url = url_tag['href']
                     connection.privmsg(self.channel, f"Google: {actual_url}")
+
+                    # Essayer de récupérer le titre de la page
                     title = self.get_page_title(actual_url)
-                    if descriptions and descriptions[0]:
-                        connection.privmsg(self.channel, f"Description: {descriptions[0].text}")
                     if title:
                         connection.privmsg(self.channel, f"Title: {title}")
+
+                    # Afficher la description si disponible
+                    if descriptions:
+                        description = descriptions[0].text.strip()
+                        if description:
+                            connection.privmsg(self.channel, f"Description: {description}")
+                        else:
+                            connection.privmsg(self.channel, "Description not found.")
+                    else:
+                        connection.privmsg(self.channel, "No description available.")
+                else:
+                    connection.privmsg(self.channel, "No URL found in the search results.")
             else:
                 connection.privmsg(self.channel, "No corresponding URL found on Google.")
         except Exception as e:
@@ -161,5 +186,10 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         return 'stream' in parsed_url.path.lower()
 
 if __name__ == "__main__":
-    bot = YouTubeBot()
-    bot.start()
+    while True:
+        try:
+            bot = YouTubeBot()
+            bot.start()
+        except Exception as e:
+            print(f"Bot crashed: {e}")
+            time.sleep(5)  # Attendre quelques secondes avant de réessayer
