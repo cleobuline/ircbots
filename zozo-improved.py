@@ -6,13 +6,13 @@ import requests
 import pyshorteners
 import imgbbpy
 import time
+from pylatexenc.latex2text import LatexNodes2Text
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
         # Charger la configuration
         with open(config_file, "r") as f:
             config = json.load(f)
-
         # Initialiser les variables
         self.channel_list = [channel.strip() for channel in config["channels"].split(",")]
         self.nickname = config["nickname"]
@@ -23,34 +23,24 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.imgbb_api_key = config["imgbb_api_key"]
         self.admin_user = config["admin_user"]
         self.blocked_users = set()
-        self.user_contexts = {}
+        self.user_contexts = []  # List to store context information
         self.model = "gpt-4o-mini"
-
-        # Initialiser les clients OpenAI et imgbb
         openai.api_key = self.api_key
         self.imgbb_client = imgbbpy.SyncClient(self.imgbb_api_key)
-
-        # Créer le dossier de conversations s'il n'existe pas
         if not os.path.exists("conversations"):
             os.makedirs("conversations")
-
-        # Initialiser le bot IRC
         irc.bot.SingleServerIRCBot.__init__(self, [(self.server, self.port)], self.nickname, self.nickname)
-
     def on_welcome(self, connection, event):
         for channel in self.channel_list:
             connection.join(channel)
-
     def on_pubmsg(self, connection, event):
         message = event.arguments[0]
         user = event.source.nick
         channel = event.target
-
         bot_nickname = self.connection.get_nickname()
         if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             command, args = self.parse_command(message)
-
             if command == "help":
                 self.send_help_message(connection, channel)
             elif command == "raz":
@@ -101,54 +91,66 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         "'delete [titre]', 'files' liste les conversations, 'block [user]' "
                         "bloque un utilisateur, 'unblock [user]' débloque un utilisateur, "
                         "'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, "
-                        "'image [prompt]' pour générer une image., 'vision [image URL]' pour décrire une image.")
+                        "'image [prompt]' pour générer une image, 'vision [image URL]' pour décrire une image.")
         connection.privmsg(channel, help_message)
-
     def update_context(self, channel, user, message):
-        context = self.user_contexts.get((channel, user), [])
-        context.append(message + ".\n")
+        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
+        
+        if context_entry:
+            context = context_entry[2]
+            context.append(message + ".")
 
-        if len(context) > self.max_num_line:
-            context = context[-self.max_num_line:]
-
-        self.user_contexts[(channel, user)] = context
+            if len(context) > self.max_num_line:
+                context = context[-self.max_num_line:]         
+            context_entry[2] = context
+        else:
+            self.user_contexts.append([channel, user, [message + "."]])
 
     def generate_response(self, channel, user, message):
-        context = "\n".join(self.user_contexts[(channel, user)][:-1])
-        last_message = self.user_contexts[(channel, user)][-1]
-
-        prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
+        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
+        if context_entry:
+            context = "\n".join(context_entry[2][:-1])
+            last_message = context_entry[2][-1]
+            prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
+            response = openai.ChatCompletion.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt_text}]
+            )
+            generated_text = response.choices[0].message.content.strip()
+            # Convertir le texte LaTeX en texte lisible
+            readable_text = LatexNodes2Text().latex_to_text(generated_text)
+            return readable_text
+        return ""
         
-        response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt_text}]
-        )
-        generated_text = response.choices[0].message.content.strip()
-        return generated_text
-
     def reset_user_context(self, channel, user):
-        self.user_contexts[(channel, user)] = ["Bonjour"]
-
+        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)      
+        if context_entry:
+            context_entry[2] = ["Bonjour"]
+        else:
+            self.user_contexts.append([channel, user, ["Bonjour"]])
     def save_user_context(self, channel, user, title):
-        if (channel, user) in self.user_contexts:
-            context = self.user_contexts[(channel, user)]
+        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)     
+        if context_entry:
+            context = context_entry[2]
             filename = os.path.join("conversations", f"{user}.{title}.context.json")
             with open(filename, "w") as file:
                 json.dump(context, file)
             self.connection.privmsg(channel, f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
         else:
             self.connection.privmsg(channel, f"Aucun contexte à sauvegarder pour {user}.")
-
     def load_user_context(self, channel, user, title):
         filename = os.path.join("conversations", f"{user}.{title}.context.json")
         if os.path.exists(filename):
             with open(filename, "r") as file:
-                context = json.load(file)
-            self.user_contexts[(channel, user)] = context
+                context = json.load(file)         
+            context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)       
+            if context_entry:
+                context_entry[2] = context
+            else:
+                self.user_contexts.append([channel, user, context])        
             self.connection.privmsg(channel, f"Contexte utilisateur de {user} avec le titre {title} chargé depuis {filename}.")
         else:
             self.connection.privmsg(channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
-
     def list_user_files(self, channel, user):
         files = [filename.split(".")[1].replace(".context.json", "") for filename in os.listdir("conversations") if filename.startswith(user) and filename.endswith(".context.json")]
         files.sort()
@@ -158,7 +160,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.connection.privmsg(channel, f"- {file}")
         else:
             self.connection.privmsg(channel, f"Aucun fichier de contexte disponible pour {user}.")
-
     def delete_user_context(self, channel, user, title):
         filename = os.path.join("conversations", f"{user}.{title}.context.json")
         if os.path.exists(filename):
@@ -166,25 +167,20 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             self.connection.privmsg(channel, f"Fichier de contexte '{title}' supprimé pour l'utilisateur {user}.")
         else:
             self.connection.privmsg(channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
-
     def block_user(self, user):
         self.blocked_users.add(user)
-
     def unblock_user(self, user):
         self.blocked_users.discard(user)
-
     def change_model(self, channel, user, model):
-        valid_models =  ["gpt-3.5-turbo", "gpt-4", "gpt-4o","gpt-4o-2024-08-06" ,"gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         if model in valid_models:
             self.model = model
-            self.connection.privmsg(channel, f"Le modèle a été changé en {model}.")
+            self.connection.privmsg(channel, f"Modèle changé à {model}.")
         else:
-            self.connection.privmsg(channel, f"Modèle invalide. Les modèles valides sont: {', '.join(valid_models)}.")
-
+            self.connection.privmsg(channel, f"Modèle {model} invalide. Modèles valides : {', '.join(valid_models)}.")
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4o","gpt-4o-2024-08-06" ,"gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-32k"]
-        self.connection.privmsg(channel, f"Modèles valides: {', '.join(valid_models)}")
-
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
+        self.connection.privmsg(channel, f"Modèles valides : {', '.join(valid_models)}.")
     def generate_image_tiny(self, connection, channel, prompt):
         try:
             response = openai.Image.create(
@@ -200,7 +196,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
         except Exception as e:
             connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
     def generate_image_imgbb(self, connection, channel, prompt):
         try:
             response = openai.Image.create(
@@ -217,14 +212,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             temp_image_path = 'temp_image.png'
             with open(temp_image_path, 'wb') as f:
                 f.write(image_data)
-
-            # Uploader l'image sur imgbb
             imgbb_response = self.imgbb_client.upload(file=temp_image_path)
-
-            # Supprimer l'image temporaire
             os.remove(temp_image_path)
-
-            # Obtenir l'URL courte
             short_url = imgbb_response.url
             connection.privmsg(channel, short_url)
         except openai.error.OpenAIError as e:
@@ -235,18 +224,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(channel, f"Erreur lors du téléchargement sur ImgBB: {str(e)}")
         except Exception as e:
             connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
     def generate_image_local(self, connection, channel, prompt):
         try:
             response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
             image_url = response['data'][0]['url']
-
             image_response = requests.get(image_url)
             image_filename = "/var/www/html/generated_image.png"
-
             with open(image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
-
             web_url = "http://labynet.fr/generated_image.png"
             connection.privmsg(channel, web_url)
         except openai.error.OpenAIError as e:
@@ -255,7 +240,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(channel, f"Erreur de téléchargement de l'image: {str(e)}")
         except Exception as e:
             connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-            
+
     def generate_image_description(self, connection, channel, image_url):
         try:
             response = openai.ChatCompletion.create(
@@ -272,20 +257,15 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         ],
                     }
                 ],
-                max_tokens=300,
+                max_tokens=500,
             )
 
             description = response.choices[0].message["content"]
             self.send_message_in_chunks(connection, channel, f"Description de l'image : {description}")
-
-
         except openai.error.OpenAIError as e:
             connection.privmsg(channel, f"Erreur lors de l'appel à l'API OpenAI: {str(e)}")
         except Exception as e:
             connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
-
-
     def send_message_in_chunks(self, connection, target, message):
         lines = message.split('\n')
         for line in lines:
@@ -305,7 +285,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         connection.privmsg(target, line.strip())
                         line = ''
                     time.sleep(0.5)
-
 if __name__ == "__main__":
     bot = ChatGPTBot("zozo.json")
     bot.start()
