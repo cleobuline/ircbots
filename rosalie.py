@@ -241,7 +241,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         return match.group(1) if match else None
 
     def is_streaming_url(self, url):
-        streaming_services = ['.mp3', '.ogg', '.m3u', '.pls', 'icecast', 'shoutcast']
+        streaming_services = ['.mp3', '.ogg', '.m3u','stream', '.pls', 'icecast', 'shoutcast']
         return any(service in url for service in streaming_services)
 
 if __name__ == "__main__":
