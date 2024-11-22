@@ -172,14 +172,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def unblock_user(self, user):
         self.blocked_users.discard(user)
     def change_model(self, channel, user, model):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         if model in valid_models:
             self.model = model
             self.connection.privmsg(channel, f"Modèle changé à {model}.")
         else:
             self.connection.privmsg(channel, f"Modèle {model} invalide. Modèles valides : {', '.join(valid_models)}.")
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         self.connection.privmsg(channel, f"Modèles valides : {', '.join(valid_models)}.")
     def generate_image_tiny(self, connection, channel, prompt):
         try:
