@@ -72,6 +72,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.generate_image_imgbb(connection, channel, args)
             elif command == "vision":
                 self.generate_image_description(connection, channel, args)
+            elif command == "url":
+                self.summarize_url(connection, channel, args)
             else:
                 if user in self.blocked_users:
                     connection.privmsg(channel, "Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
@@ -91,7 +93,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         "'delete [titre]', 'files' liste les conversations, 'block [user]' "
                         "bloque un utilisateur, 'unblock [user]' débloque un utilisateur, "
                         "'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, "
-                        "'image [prompt]' pour générer une image, 'vision [image URL]' pour décrire une image.")
+                        "'image [prompt]' pour générer une image, 'vision [image URL]' pour décrire une image. 'url [ URL]' pour décrire une page web.")
         connection.privmsg(channel, help_message)
     def update_context(self, channel, user, message):
         context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
@@ -181,6 +183,35 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def list_models(self, channel):
         valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         self.connection.privmsg(channel, f"Modèles valides : {', '.join(valid_models)}.")
+        
+    def summarize_url(self, connection, channel, url):
+        try:
+           # Vérifier si l'URL commence par "http" pour éviter les erreurs
+            if not url.startswith("http"):
+                url = "http://" + url
+        
+            # Récupérer le contenu de l'URL
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()  # Vérifie si la requête a réussi
+            content = response.text
+
+            # Envoyer le contenu à GPT pour le résumer
+            prompt = f"Voici le contenu d'une page web : {content[:4000]} \n\nRésume ce contenu en quelques phrases claires et concises."
+            ai_response = openai.ChatCompletion.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            # Extraire et envoyer le résumé
+            summary = ai_response['choices'][0]['message']['content'].strip()
+            self.send_message_in_chunks(connection, channel, f"Résumé de la page : {summary}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur lors de la récupération de l'URL : {e}")
+        except openai.error.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur lors de la génération du résumé : {e}")
+        except Exception as e:
+            connection.privmsg(channel, f"Une erreur inattendue est survenue : {e}")
+
     def generate_image_tiny(self, connection, channel, prompt):
         try:
             response = openai.Image.create(
