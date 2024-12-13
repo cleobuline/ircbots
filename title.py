@@ -59,6 +59,8 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             self.handle_polloff_command(connection)
         elif command.startswith('!pollon'):
             self.handle_pollon_command(connection)
+        elif command.startswith('!wish'):
+            self.handle_wish_command(connection, command)
         else:
             pass  # Do nothing if the command is not recognized
 
@@ -235,14 +237,26 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, f"Lecture de tous les morceaux de l'artiste : {artist_name}")
 
     def handle_say_command(self, connection, command):
-        """Handles the !say command to repeat the given message in the channel."""
-        message = command.split('!say', 1)[1].strip()
-        connection.privmsg(self.channel, message)
+        text_to_say = command.split(' ', 1)[1]
+        if not text_to_say:
+            connection.privmsg(self.channel, "Erreur: Message manquant.")
+            return
+        
+        set_volume_script = 'tell application "Music" to set sound volume to 50'
+        _, error = self.execute_applescript(set_volume_script)
+        if error:
+            connection.privmsg(self.channel, f"Erreur lors de la modification du volume : {error}")
+        else:
+            subprocess.run(['say', text_to_say])
+            set_volume_script = 'tell application "Music" to set sound volume to 100'
+            _, error = self.execute_applescript(set_volume_script)
+            if error:
+                connection.privmsg(self.channel, f"Erreur lors de la modification du volume : {error}")
 
     def handle_help_command(self, connection):
         help_message = (
             "Commandes disponibles : !title, !next, !prev, !pause, !play, !playlist <nom>, !track <nom>, "
-            "!genre <nom>, !artist <nom>, !say <message>, !polloff affichage des titre en live , !pollon fin de l'affichage des titres'"
+            "!genre <nom>, !artist <nom>, !wish <voeux pour rajouter a la radio> !say <message>, !polloff affichage des titre en live , !pollon fin de l'affichage des titres'"
         )
         connection.privmsg(self.channel, help_message)
 
@@ -261,6 +275,19 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "La mise à jour automatique des informations de piste a été activée.")
         else:
             connection.privmsg(self.channel, "La mise à jour automatique des informations de piste est déjà activée.")
+    def handle_wish_command(self, connection, command):
+        """Handles the !wish command to add a wish to the wishlist.txt file."""
+        wish_text = command.split('!wish', 1)[1].strip()
+        if not wish_text:
+            connection.privmsg(self.channel, "Erreur: Aucun texte spécifié pour la wishlist.")
+            return
+
+        try:
+            with open('wishlist.txt', 'a') as file:
+                file.write(wish_text + '\n')
+            connection.privmsg(self.channel, f"Souhait ajouté à la liste : {wish_text}")
+        except Exception as e:
+            connection.privmsg(self.channel, f"Erreur lors de l'ajout du souhait : {str(e)}")
 
     def find_partial_playlist(self, partial_name, all_playlists):
         """Finds playlists that partially match the given name."""
