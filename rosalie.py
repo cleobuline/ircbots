@@ -6,15 +6,17 @@ from bs4 import BeautifulSoup
 import re
 import urllib.parse
 import math 
+from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "YOUR YOUTUBE API"  # Clé API YouTube
-        self.weather_api_key = "YOUR WEATHER API"  # Remplacez par votre clé API WeatherAPI
-        self.news_api_key = "YOUR NEWS API"  # Remplacez par votre clé API NewsAPI
-        self.server = "labynet.fr"
+        self.api_key = "Clé API YouTube"  # Clé API YouTube
+        self.weather_api_key = "Remplacez par votre clé API WeatherAPI"  # Remplacez par votre clé API WeatherAPI
+        self.news_api_key = "Remplacez par votre clé API NewsAPI"  # Remplacez par votre clé API NewsAPI
+        self.server = "irc.epiknet.org"
         self.port = 6667
-        self.channel = "#labynet"
+        self.channel = "#zone-libre"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
@@ -33,39 +35,26 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         connection.join(self.channel)
         print(f"Connecté au canal {self.channel}.")
     def on_error(self, connection, event):
-        """
-        Cette méthode est appelée lors d'une erreur de connexion (ping timeout, read error, etc.).
-        Elle va tenter de reconnecter le bot automatiquement.
-        """
-        print(f"Erreur détectée: {event}. Tentative de reconnexion...")
+        print(f"Erreur détectée : {event}. Tentative de reconnexion...")
         self.reconnect(connection)
+
     def reconnect(self, connection):
         """Tentative de reconnexion au serveur IRC."""
-        try:
-            connection.disconnect("Reconnexion en cours...")
-            time.sleep(5)  # Attendre un peu avant de tenter une reconnexion
-            connection.connect(self.server, self.port, self.nickname)
-            print("Reconnexion réussie!")
-        except Exception as e:
-            print(f"Erreur lors de la reconnexion : {e}. Nouvelle tentative dans 10 secondes.")
-            time.sleep(10)  # Attendre 10 secondes avant de tenter à nouveau
+        while True:
+            try:
+                connection.disconnect("Reconnexion en cours...")
+                time.sleep(5)  # Attendre un peu avant de tenter une reconnexion
+                connection.connect(self.server, self.port, self.nickname)
+                print("Reconnexion réussie!")
+                break  # Sortir de la boucle si la reconnexion réussit
+            except Exception as e:
+                print(f"Erreur lors de la reconnexion : {e}. Nouvelle tentative dans 10 secondes.")
+                time.sleep(10)  # Attendre 10 secondes avant de tenter à nouveau
 
     def on_disconnect(self, connection, event):
         print("Déconnecté du serveur, tentative de reconnexion...")
-        try:
-            connection.disconnect("Reconnexion en cours...")
-        except Exception as e:
-            print(f"Erreur lors de la tentative de déconnexion propre : {e}")
-    
-        while True:
-            try:
-                self.connection.connect(self.server, self.port, self.nickname)
-                print("Reconnexion réussie!")
-                break
-            except Exception as e:
-                print(f"Erreur lors de la tentative de reconnexion : {e}. Nouvelle tentative dans 10 secondes.")
-                time.sleep(10)
-
+        self.reconnect(connection)
+        
     def on_pubmsg(self, connection, event):
         try:
             message = event.arguments[0]
@@ -73,14 +62,35 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             for url in urls:
                 if self.is_streaming_url(url):
                     continue
-                
-                if "youtube.com" in url or "youtu.be" in url or "music.youtube.com" in url:
-                    title = self.get_youtube_title(url)
+                if "youtube.com" in url or "youtu.be" in url:
+                    video_info = self.get_youtube_video_info(url)
+                    if video_info:
+                        connection.privmsg(self.channel, video_info)
                 else:
                     title = self.get_page_title(url)
-                
-                if title:
-                    connection.privmsg(self.channel, f"Title: {title}")
+                    if(title):
+                        connection.privmsg(self.channel, f"Title: {title}")
+
+            if message.startswith('!joke'):
+                try:
+                    # Récupérer une blague via l'API
+                    parts = message.split()
+                    lang = parts[1] if len(parts) > 1 else 'fr'
+                    if (lang =="zh"): lang ="zh-CN"
+                    headers = {'Accept': 'application/json'}
+                    response = requests.get("https://icanhazdadjoke.com/", headers=headers)
+                    response.raise_for_status()
+                    joke = response.json().get('joke', "Pas de blague disponible, désolé !")
+        
+                    # Traduire la blague en français
+                    translator = Translator()
+                    #translated_joke = translator.translate(joke, src='en', dest=lang).text
+                    translated_joke = GoogleTranslator(source='en', target=lang).translate(joke)
+
+                    # Envoyer la blague traduite
+                    connection.privmsg(self.channel, translated_joke)
+                except Exception as e:
+                    connection.privmsg(self.channel, "Erreur lors de la récupération ou traduction d'une blague. 😢")
 
             if message.startswith('!yt'):
                 query = message.split('!yt')[1].strip()
@@ -112,10 +122,76 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 self.evaluate_expression( expression,connection)
             elif message.startswith('!?'):
                 connection.privmsg(self.channel, f"cos(x),sin(x),tan(x),acos(x),asin (x),atan(x),log(x),log10(x),log2(x),sqrt(x),exp(x),pow(x,y),fact(x),deg(x),rad(x),pi,e, tau,ceil(x),floor(x),fabs(x), gcd(x,y), isqrt(x), hypot(x,y) Norme euclidienne de (X, Y)")
+
         except Exception as e:
             print(f"Error in on_pubmsg: {e}")
             connection.privmsg(self.channel, f"Une erreur est apparue. {str(e)}")
- 
+
+    def get_youtube_video_info(self, url):
+        """Récupère les informations d'une vidéo YouTube en utilisant l'API YouTube."""
+        try:
+            # Extraire l'ID de la vidéo depuis l'URL
+            video_id = self.extract_youtube_id(url)
+            if not video_id:
+                return None
+
+            # Appeler l'API YouTube Data v3
+            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={self.api_key}"
+            response = requests.get(api_url)
+            response.raise_for_status()
+            data = response.json()
+
+            if "items" not in data or not data["items"]:
+                return "Aucune information trouvée pour cette vidéo."
+
+            video_data = data["items"][0]
+            snippet = video_data["snippet"]
+            statistics = video_data.get("statistics", {})
+            content_details = video_data.get("contentDetails", {})
+
+            # Récupérer les informations nécessaires
+            title = snippet.get("title", "Titre inconnu")
+            channel = snippet.get("channelTitle", "Chaîne inconnue")
+            views = int(statistics.get("viewCount", 0))
+            likes = int(statistics.get("likeCount", 0))
+            comments = int(statistics.get("commentCount", 0))
+            duration = self.parse_youtube_duration(content_details.get("duration", "PT0S"))
+            publish_date = snippet.get("publishedAt", "Date inconnue").split("T")[0]
+
+            # Construire le message
+            return (
+                f"🎥 Titre : {title} | 📺 Chaîne : {channel} | 👀 Vues : {views:,} | 👍 Likes : {likes:,} | "
+                f"💬 Commentaires : {comments:,} | 🕒 Durée : {duration} | 📅 Publié le : {publish_date} | "
+                #f"🔗 Lien : {url}"
+            )
+        except Exception as e:
+            print(f"Erreur lors de la récupération des informations YouTube : {e}")
+            return "Erreur lors de la récupération des informations vidéo."
+
+    def extract_youtube_id(self, url):
+        """Extrait l'ID de la vidéo YouTube à partir de l'URL."""
+        patterns = [
+            r"youtu\.be/([^?&]+)",
+            r"youtube\.com/watch\?v=([^?&]+)",
+            r"youtube\.com/embed/([^?&]+)"
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        return None
+
+    def parse_youtube_duration(self, duration):
+        """Convertit la durée ISO 8601 en un format lisible (hh:mm:ss)."""
+        hours, minutes, seconds = 0, 0, 0
+        match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration)
+        if match:
+            hours = int(match.group(1) or 0)
+            minutes = int(match.group(2) or 0)
+            seconds = int(match.group(3) or 0)
+        if hours > 0:
+            return f"{hours}h {minutes}m {seconds}s"
+        return f"{minutes}m {seconds}s"
     def evaluate_expression(self, expression, connection):
         try:
             # Ajouter un contexte mathématique sécurisé
@@ -151,7 +227,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
 
             # Remplacer ^ par ** pour les puissances
             expression = expression.replace('^', '**')
-            expression =expression.replace('x', '*')
+
             # Évaluer l'expression en utilisant le contexte mathématique
             result = eval(expression, {"__builtins__": None}, math_context)
             connection.privmsg(self.channel, f"Résultat : {result}")
@@ -166,6 +242,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             "!gg <query> - Recherche Google --"
             "!news <query> - Dernières nouvelles --"
             "!geo <location≥ - Google Map"
+            "!eval [Expression]] - Calcul "
             "!help - Aide"
         )
         connection.privmsg(self.channel, help_text)
@@ -182,24 +259,27 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         ydl_opts = {
             'format': 'best',
             'quiet': True,
-            'extract_flat': 0,
+            'extract_flat': False,
             'default_search': 'auto',
             'youtube_include_dash_manifest': False,
-            'youtube_api_key': self.api_key,
-            'user_agent': self.user_agent
+            'http_headers': {'User-Agent': self.user_agent},
         }
-        with YoutubeDL(ydl_opts) as ydl:
-            try:
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
                 # Rechercher la vidéo
                 info_dict = ydl.extract_info("ytsearch:" + query, download=False)
+                if not info_dict.get('entries'):
+                    connection.privmsg(self.channel, "Aucune vidéo trouvée pour cette recherche.")
+                    return
+
                 video = info_dict['entries'][0]
 
                 # Récupérer les informations pertinentes
                 title = video.get('title', 'Titre inconnu')
                 url = video.get('webpage_url', 'URL inconnue')
                 uploader = video.get('uploader', 'Chaine inconnue')
-                duration = video.get('duration', 0)  # Durée en secondes
-                views = video.get('view_count', 0)  # Nombre de vues
+                duration = video.get('duration', 0) or 0
+                views = video.get('view_count', 0)
                 upload_date = video.get('upload_date', 'Date inconnue')
 
                 # Convertir la durée en format hh:mm:ss
@@ -208,15 +288,17 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 formatted_duration = f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
 
                 # Formater la date de publication
-                formatted_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date != 'Date inconnue' else 'Date inconnue'
+                formatted_date = (f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+                                  if len(upload_date) == 8 else "Date inconnue")
 
                 # Envoyer les informations au canal
                 message = (f"Résultat YouTube : {title} | Par : {uploader} | Durée : {formatted_duration} | "
                            f"Vues : {views:,} | Publié le : {formatted_date} | Lien : {url}")
                 connection.privmsg(self.channel, message)
-            except Exception as e:
-                print(f"Erreur dans search_youtube : {e}")
-                connection.privmsg(self.channel, "Erreur lors de la recherche YouTube.")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            connection.privmsg(self.channel, "Erreur lors de la recherche YouTube.")
 
 
     def search_google(self, query, connection):
@@ -257,8 +339,8 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             
     def search_google_new (self, query, connection):
         try:
-            api_key = 'YOUR GOOGLE SEARCH API'  # Remplace par ta clé API
-            cx = 'YOUR ID SEARCH ENGINE'  # Remplace par ton ID moteur de recherche personnalisé
+            api_key = 'AIzaSyCPd41lAbbql_fm9Kc2mhNbj065BAthjgM'  # Remplace par ta clé API
+            cx = '504b15e6905144f3f'  # Remplace par ton ID moteur de recherche personnalisé
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={api_key}&cx={cx}&hl=fr&lr=lang_fr"
 
             # Afficher l'URL pour déboguer
@@ -373,6 +455,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                     title = article.get("title", "Pas de titre")
                     url = article.get("url", "")
                     connection.privmsg(self.channel, f"News: {title} - {url}")
+                    time.sleep(2)
             else:
                 connection.privmsg(self.channel, "Aucune nouvelle trouvée pour cette recherche.")
         except Exception as e:
@@ -381,10 +464,13 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
 
     def extract_urls(self, message):
         return re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message)
+        #return re.findall(r'https?://[a-zA-Z0-9.-]+(?:/[a-zA-Z0-9._~:/?#[\]@!$&\'()*+,;=%-]*)?', message)
+        #return re.findall(r'https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F])|[-])+', message)
+        #return re.findall(r'https?://(?:[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+)', message)
 
     def get_page_title(self, url):
         try:
-            response = requests.get(url, headers={'User-Agent': self.user_agent})
+            response = requests.get(url, headers={'User-Agent': self.user_agent}, timeout=2)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'html.parser')
             title_tag = soup.find('title')
@@ -415,7 +501,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         return match.group(1) if match else None
 
     def is_streaming_url(self, url):
-        return any(ext in url for ext in ['.mp3', '.ogg', '.m3u', '.pls', 'icecast','stream' , 'shoutcast'])
+        return any(ext in url for ext in ['.gif','.png','.jpeg','.jpg','.mp3', '.ogg', '.m3u', '.pls', 'icecast','stream' , 'shoutcast'])
 
 
     def send_message_in_chunks(self, connection, target, message):
@@ -436,7 +522,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                     else:
                         connection.privmsg(target, line.strip())
                         line = ''
-                    time.sleep(0.5)
+                    time.sleep(2)
 if __name__ == "__main__":
     bot = YouTubeBot()
     bot.start()
