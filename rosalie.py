@@ -11,12 +11,12 @@ from deep_translator import GoogleTranslator
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "Clé API YouTube"  # Clé API YouTube
-        self.weather_api_key = "Remplacez par votre clé API WeatherAPI"  # Remplacez par votre clé API WeatherAPI
-        self.news_api_key = "Remplacez par votre clé API NewsAPI"  # Remplacez par votre clé API NewsAPI
-        self.server = "irc.epiknet.org"
+        self.api_key = "put your key here"  # Clé API YouTube
+        self.weather_api_key = "put your key here"  # Remplacez par votre clé API WeatherAPI
+        self.news_api_key = "put your key here"  # Remplacez par votre clé API NewsAPI
+        self.server = "labynet.fr"
         self.port = 6667
-        self.channel = "#zone-libre"
+        self.channel = "#labynet"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
@@ -111,6 +111,20 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 self.send_help_message(connection)
             elif message.startswith('!dico'):
                 self.larousse( connection, event)
+            elif message.startswith('!en'):
+                try:
+                    input_text = message.split('!en', 1)[1].strip()
+                    translated_text = GoogleTranslator(source='fr', target='en').translate(input_text)
+                    connection.privmsg(self.channel, f" {translated_text}")
+                except Exception as e:
+                    connection.privmsg(self.channel, "Erreur lors de la traduction.")
+            elif message.startswith('!fr'):
+                try:
+                    input_text = message.split('!fr', 1)[1].strip()
+                    translated_text = GoogleTranslator(source='en', target='fr').translate(input_text)
+                    connection.privmsg(self.channel, f" {translated_text}")
+                except Exception as e:
+                    connection.privmsg(self.channel, "Erreur lors de la traduction.")
             elif message.startswith('!=') or message.startswith('!eval') or message.startswith('!calc'):
                 if message.startswith('!='):
                     expression = message.split('!=', 1)[1].strip()
