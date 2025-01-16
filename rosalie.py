@@ -111,18 +111,20 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 self.send_help_message(connection)
             elif message.startswith('!dico'):
                 self.larousse( connection, event)
-            elif message.startswith('!en'):
+            elif message.startswith(('!fr', '!ar', '!es', '!en')):
                 try:
-                    input_text = message.split('!en', 1)[1].strip()
-                    translated_text = GoogleTranslator(source='fr', target='en').translate(input_text)
-                    connection.privmsg(self.channel, f" {translated_text}")
-                except Exception as e:
-                    connection.privmsg(self.channel, "Erreur lors de la traduction.")
-            elif message.startswith('!fr'):
-                try:
-                    input_text = message.split('!fr', 1)[1].strip()
-                    translated_text = GoogleTranslator(source='en', target='fr').translate(input_text)
-                    connection.privmsg(self.channel, f" {translated_text}")
+                    # Identifier la commande et la langue cible
+                    command = message.split()[0]  # Récupère la commande (!fr, !ar, etc.)
+                    target_lang = command[1:]  # Extrait la langue cible (fr, ar, es, en)
+        
+                    # Extraire le texte à traduire
+                    input_text = message.split(command, 1)[1].strip()
+        
+                    # Traduire en utilisant la détection automatique
+                    translated_text = GoogleTranslator(source='auto', target=target_lang).translate(input_text)
+        
+                    # Envoyer la traduction
+                    connection.privmsg(self.channel, f"{translated_text}")
                 except Exception as e:
                     connection.privmsg(self.channel, "Erreur lors de la traduction.")
             elif message.startswith('!=') or message.startswith('!eval') or message.startswith('!calc'):
