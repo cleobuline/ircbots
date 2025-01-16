@@ -257,6 +257,8 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             "!news <query> - Dernières nouvelles --"
             "!geo <location≥ - Google Map"
             "!eval [Expression]] - Calcul "
+            "!fr translate english to french"
+            "!en translate french to english"
             "!help - Aide"
         )
         connection.privmsg(self.channel, help_text)
