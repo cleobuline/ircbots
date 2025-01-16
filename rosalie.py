@@ -111,7 +111,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 self.send_help_message(connection)
             elif message.startswith('!dico'):
                 self.larousse( connection, event)
-            elif message.startswith(('!fr', '!ar', '!es', '!en')):
+            elif message.startswith(('!it', '!de','!fr', '!ar', '!es', '!en')):
                 try:
                     # Identifier la commande et la langue cible
                     command = message.split()[0]  # Récupère la commande (!fr, !ar, etc.)
