@@ -259,8 +259,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             "!news <query> - Dernières nouvelles --"
             "!geo <location≥ - Google Map"
             "!eval [Expression]] - Calcul "
-            "!fr translate english to french"
-            "!en translate french to english"
+            "!fr,!de,!it,!ar,!en,!es translate source langage  to target"
             "!help - Aide"
         )
         connection.privmsg(self.channel, help_text)
@@ -357,8 +356,8 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             
     def search_google_new (self, query, connection):
         try:
-            api_key = 'AIzaSyCPd41lAbbql_fm9Kc2mhNbj065BAthjgM'  # Remplace par ta clé API
-            cx = '504b15e6905144f3f'  # Remplace par ton ID moteur de recherche personnalisé
+            api_key = 'put your api here '  # Remplace par ta clé API
+            cx = 'id search tool'  # Remplace par ton ID moteur de recherche personnalisé
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={api_key}&cx={cx}&hl=fr&lr=lang_fr"
 
             # Afficher l'URL pour déboguer
