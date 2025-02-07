@@ -1,6 +1,7 @@
 import irc.bot
 import time
 from yt_dlp import YoutubeDL
+
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -8,21 +9,42 @@ import urllib.parse
 import math 
 from googletrans import Translator
 from deep_translator import GoogleTranslator
+from geopy.geocoders import Nominatim
+from timezonefinder import TimezoneFinder
+import pytz
+import math
+from datetime import datetime, timedelta
+from geopy.geocoders import Nominatim
+import random
+import subprocess
+import os 
+import json 
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.api_key = "put your key here"  # Clé API YouTube
-        self.weather_api_key = "put your key here"  # Remplacez par votre clé API WeatherAPI
-        self.news_api_key = "put your key here"  # Remplacez par votre clé API NewsAPI
         self.server = "labynet.fr"
         self.port = 6667
         self.channel = "#labynet"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
-        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
-        # Appel au constructeur de la classe parente avec tentative de reconnexion
+        self.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36'
+        try:
+            with open("rosalie.json", "r") as f:
+                config = json.load(f)
+                self.youtube_api_key = config.get("youtube_api_key", "")
+                self.weather_api_key = config.get("weather_api_key", "")
+                self.news_api_key = config.get("news_api_key", "")
+                self.google_api_key = config.get("google_api_key", "")
+                self.cx = config.get("cx", "")
+        except Exception as e:
+            print(f"Erreur lors du chargement de rosalie.json : {e}")
+            self.api_key = ""
+            self.weather_api_key = ""
+            self.news_api_key = ""
+            self.google_api_key = ""
+            self.cx = ""
+        # Appel au constructeur de la classe    parente avec tentative de reconnexion
         while True:
             try:
                 irc.bot.SingleServerIRCBot.__init__(self, [(self.server, self.port)], self.nickname, self.realname)
@@ -51,13 +73,97 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 print(f"Erreur lors de la reconnexion : {e}. Nouvelle tentative dans 10 secondes.")
                 time.sleep(10)  # Attendre 10 secondes avant de tenter à nouveau
 
+
+
+
+    def calculate_solar_time(self, location, connection):
+        try:
+            # Étape 1 : Obtenir les coordonnées géographiques
+            geolocator = Nominatim(user_agent="solar_time")
+            location_data = geolocator.geocode(location)
+
+            if not location_data:
+                connection.privmsg(self.channel, f"Impossible de trouver l'emplacement pour '{location}'.")
+                return
+
+            latitude, longitude = location_data.latitude, location_data.longitude
+
+            # Étape 2 : Obtenir l'heure UTC actuelle
+            utc_now = datetime.utcnow()
+
+            # Étape 3 : Calculer la différence de longitude en heures
+            time_difference = longitude / 15.0  # 15° par heure
+
+            # Étape 4 : Ajouter l'équation du temps
+            day_of_year = utc_now.timetuple().tm_yday
+            b = 2 * math.pi * (day_of_year - 81) / 364
+            equation_of_time = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+            equation_of_time_in_hours = equation_of_time / 60.0  # Convertir en heures
+
+            # Calculer l'heure solaire
+            solar_time = utc_now + timedelta(hours=time_difference + equation_of_time_in_hours)
+
+            # Formatage et affichage
+            solar_time_str = solar_time.strftime('%Y-%m-%d %H:%M:%S')
+            connection.privmsg(
+                self.channel,
+                f"L'heure solaire pour {location_data.address} est : {solar_time_str}."
+            )
+        except Exception as e:
+            connection.privmsg(self.channel, f"Erreur lors du calcul de l'heure solaire : {e}")
+
+
+    def get_timezone_from_city(self, location, connection):
+        try:
+            # Convertir la ville en coordonnées géographiques
+            geolocator = Nominatim(user_agent="city_to_timezone")
+            location_data = geolocator.geocode(location)
+
+            if not location_data:
+                connection.privmsg(self.channel, f"Impossible de trouver l'emplacement pour '{location}'.")
+                return
+
+            latitude, longitude = location_data.latitude, location_data.longitude
+
+            # Trouver le fuseau horaire
+            tf = TimezoneFinder()
+            timezone_name = tf.timezone_at(lat=latitude, lng=longitude)
+
+            if not timezone_name:
+                connection.privmsg(self.channel, "Impossible de déterminer le fuseau horaire.")
+                return
+
+            # Obtenir l'heure locale
+            tz = pytz.timezone(timezone_name)
+            local_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+
+            connection.privmsg(
+                self.channel,
+                f"L'heure locale pour {location_data.address} est : {local_time} (Fuseau horaire : {timezone_name})"
+             )
+        except Exception as e:
+            connection.privmsg(self.channel, f"Erreur lors de la récupération du fuseau horaire : {e}")
+            
     def on_disconnect(self, connection, event):
         print("Déconnecté du serveur, tentative de reconnexion...")
         self.reconnect(connection)
+    def verlan_message(self, message):
+        """Transforme chaque mot du message en inversant ses deux moitiés."""
+        def split_and_reverse(word):
+            mid = len(word) // 2
+            return word[mid:] + word[:mid]  # On inverse les deux moitiés
+
+        words = message.split()
+        transformed_words = [split_and_reverse(word) for word in words]
+        return ' '.join(transformed_words)        
         
     def on_pubmsg(self, connection, event):
         try:
             message = event.arguments[0]
+            if message.startswith('!dl'):
+                url = message.split(" ", 1)[1]
+                self.download_youtube_video(url, connection)
+                return
             urls = self.extract_urls(message)
             for url in urls:
                 if self.is_streaming_url(url):
@@ -68,7 +174,9 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                         connection.privmsg(self.channel, video_info)
                 else:
                     title = self.get_page_title(url)
+                    
                     if(title):
+                        #title = title.encode('latin1').decode('utf-8')
                         connection.privmsg(self.channel, f"Title: {title}")
 
             if message.startswith('!joke'):
@@ -95,12 +203,37 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             if message.startswith('!yt'):
                 query = message.split('!yt')[1].strip()
                 self.search_youtube(query, connection)
+            elif message.startswith('!verlan'):
+                original_text = message.split('!verlan', 1)[1].strip()
+                if not original_text:
+                    connection.privmsg(self.channel, "Utilisation : !verlan <texte>")
+                    return
+            
+                transformed_text = self.verlan_message(original_text)
+                connection.privmsg(self.channel, transformed_text)
+            elif message.startswith('!time'):
+                location = message.split('!time')[1].strip()
+                self.get_timezone_from_city(location, connection)
+            elif message.startswith('!solar'):
+                location = message.split('!solar')[1].strip()
+                self.calculate_solar_time(location, connection)
+            elif message.startswith('!insult'):
+                parts = message.split()
+                if len(parts) > 1:
+                    target = parts[1]
+                    self.insult_medievale(target, connection)
+                else:
+                    connection.privmsg(self.channel, "Usage: !insult <pseudo>")
+
             elif message.startswith('!w'):
                 location = message.split('!w')[1].strip()
                 self.get_weather(location, connection)
             elif message.startswith('!gg'):
                 query = message.split('!gg')[1].strip()
                 self.search_google(query, connection)
+            elif message.startswith('!go'):
+                query = message.split('!go')[1].strip()
+                self.search_google_old(query, connection)
             elif message.startswith('!news'):
                 query = message.split('!news')[1].strip() if len(message.split('!news')) > 1 else ""
                 self.search_news(query, connection)
@@ -111,20 +244,22 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 self.send_help_message(connection)
             elif message.startswith('!dico'):
                 self.larousse( connection, event)
-            elif message.startswith(('!it', '!de','!fr', '!ar', '!es', '!en')):
+            elif message.startswith(('!vi','!ja','!fi','!it', '!de ','!fr','!ru', '!zh' ,'!ar ', '!es', '!en')):
                 try:
-                    # Identifier la commande et la langue cible
+                    #     Identifier la commande et la langue cible
                     command = message.split()[0]  # Récupère la commande (!fr, !ar, etc.)
                     target_lang = command[1:]  # Extrait la langue cible (fr, ar, es, en)
-        
+                    if (target_lang =="zh"): target_lang ="zh-CN"
                     # Extraire le texte à traduire
                     input_text = message.split(command, 1)[1].strip()
         
                     # Traduire en utilisant la détection automatique
                     translated_text = GoogleTranslator(source='auto', target=target_lang).translate(input_text)
         
-                    # Envoyer la traduction
+                    #  Envoyer la traduction
                     connection.privmsg(self.channel, f"{translated_text}")
+                except Exception as e:
+                    connection.privmsg(self.channel, "Erreur lors de la traduction.")
                 except Exception as e:
                     connection.privmsg(self.channel, "Erreur lors de la traduction.")
             elif message.startswith('!=') or message.startswith('!eval') or message.startswith('!calc'):
@@ -152,7 +287,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 return None
 
             # Appeler l'API YouTube Data v3
-            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={self.api_key}"
+            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={self.youtube_api_key}"
             response = requests.get(api_url)
             response.raise_for_status()
             data = response.json()
@@ -196,6 +331,44 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             if match:
                 return match.group(1)
         return None
+    def download_youtube_video(self, url, connection):
+        try:
+            # Définir le chemin de sortie pour la vidéo téléchargée
+            output_path = "/var/www/html/videos/%(title)s.%(ext)s"
+            # Télécharger la vidéo avec yt-dlp
+            #command = ["yt-dlp", "-o", output_path, url]
+            #command = ["yt-dlp", "-f", "mp4", "-o", output_path, url]  # Forcer le format mp4
+            #command = ["yt-dlp", "-f", "bestvideo+bestaudio", "-o", output_path, url]  # Télécharger la meilleure vidéo et audio
+            command = [
+                "yt-dlp",
+                "-f", "bestvideo+bestaudio/best",  # Télécharger la meilleure vidéo et audio disponibles
+                "-o", output_path,  # Chemin de sortie
+                "--merge-output-format", "mp4",  # Fusionner la vidéo et l'audio en mp4
+                url
+            ]
+            subprocess.run(command, check=True)
+
+            # Trouver le fichier téléchargé
+            output_dir = "/var/www/html/videos"
+            files = sorted(os.listdir(output_dir), key=lambda f: os.path.getctime(os.path.join(output_dir, f)), reverse=True)
+            if files:
+                filename = files[0]
+                # Définir les bonnes permissions pour le fichier téléchargé
+                os.chmod(os.path.join(output_dir, filename), 0o644)  # Lecture/écriture pour le propriétaire, lecture pour les autres
+
+                # Encoder correctement le nom du fichier pour l'URL
+                encoded_filename = urllib.parse.quote(filename)
+                download_link = f"https://labynet.fr/videos/{encoded_filename}"
+                # Envoyer le lien de téléchargement dans le canal IRC
+                connection.privmsg(self.channel, f"Téléchargement terminé ! Voici le lien : {download_link}")
+            else:
+                connection.privmsg(self.channel, "Erreur : Impossible de trouver le fichier téléchargé.")
+
+        except subprocess.CalledProcessError:
+            connection.privmsg(self.channel, "Erreur lors du téléchargement de la vidéo.")
+
+        except Exception as e:
+            connection.privmsg(self.channel, f"Erreur inattendue : {str(e)}")
 
     def parse_youtube_duration(self, duration):
         """Convertit la durée ISO 8601 en un format lisible (hh:mm:ss)."""
@@ -208,6 +381,50 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         if hours > 0:
             return f"{hours}h {minutes}m {seconds}s"
         return f"{minutes}m {seconds}s"
+
+
+    def insult_medievale(self, target, connection):
+        insults = [
+            "Que les poux et la gale soient tes seuls compagnons, vil faquin !",
+            "Ton haleine empeste plus que l’arrière-train d’un dragon enragé !",
+            "Tu es plus inutile qu’un troubadour sans luth !",
+            "Que tes chausses se trouent et que ton potage soit toujours froid !",
+            "Par saint Glinglin, t’es plus laid qu’un troll après une beuverie !",
+            "Si la bêtise était un royaume, tu en serais le souverain incontesté !",
+            "Tu sens plus mauvais qu’une fosse à purin un jour de grand vent !",
+            "Que ton cheval te morde et que ton épée rouille avant l’aube !",
+            "Même un gueux affamé ne volerait point ton pain !",
+            "Tu es plus faible qu’un château en paille face au vent du nord !",
+            "Que ta choppe soit toujours vide et ton vin tourné en vinaigre !",
+            "Par les dieux, même un bouffon ferait un meilleur chevalier que toi !",
+            "Ton épée est plus rouillée que l’armure d’un cadavre oublié !",
+            "Que ton nom soit moqué dans toutes les tavernes du royaume !",
+            "Ta cervelle est plus vide qu’un tonneau percé !",
+            "Que ton destrier refuse à jamais de t’obéir, maudit palefrenier !",
+            "Par saint Michel, ton courage rivalise avec celui d’un escargot enrhumé !",
+            "Que ton armure rouille et que ton heaume t’étrangle, couard de bas étage !",
+            "Même un moine cloîtré a plus d’audace que toi !",
+            "Ton honneur est plus tâché que la nappe d’une auberge après une beuverie !",
+            "Que le ciel s’abatte sur toi et que les corbeaux festoient sur tes restes !",
+            "Que la peste emporte ta langue trop bien pendue, maraud !",
+            "Ton esprit est plus confus que les comptes d’un tavernier ivre !",
+            "Que tes bottes se transforment en sabots et que ton cheval te crache dessus !",
+            "On parle de toi dans tout le royaume... mais seulement pour se moquer !",
+            "Que les rats de la ville préfèrent ton logis à la fange des égouts !",
+            "Si la laideur était une armure, tu serais invincible !",
+            "Tu es aussi utile qu’un bouclier en beurre en pleine bataille !",
+            "Même un âne en robe de mage paraîtrait plus intelligent que toi !",
+            "On croirait que les dieux t'ont sculpté dans une motte de fumier !",
+            "Que ton nom soit oublié et ton existence effacée des chroniques du royaume !",
+            "Tu es plus traître qu’un félon à la solde d’un duc sans honneur !",
+            "Ton odeur pourrait faire fuir une armée entière, même sans bataille !",
+           "Si la bêtise était une quête, tu serais déjà chevalier légendaire !"
+        ]
+
+
+        insult = random.choice(insults)
+        connection.privmsg(self.channel, f"{target}: {insult}")
+
     def evaluate_expression(self, expression, connection):
         try:
             # Ajouter un contexte mathématique sécurisé
@@ -246,7 +463,8 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
 
             # Évaluer l'expression en utilisant le contexte mathématique
             result = eval(expression, {"__builtins__": None}, math_context)
-            connection.privmsg(self.channel, f"Résultat : {result}")
+            self.send_message_in_chunks(connection, self.channel, f"Résultat : {result}")
+            #connection.privmsg(self.channel, f"Résultat : {result}")
         except Exception as e:
             connection.privmsg(self.channel, f"Erreur lors de l'évaluation : {e}")
 
@@ -257,10 +475,12 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             "!w <location> - Météo d'un site --"
             "!gg <query> - Recherche Google --"
             "!news <query> - Dernières nouvelles --"
-            "!geo <location≥ - Google Map"
+            "!geo <location> - Google Map"
             "!eval [Expression]] - Calcul "
-            "!fr,!de,!it,!ar,!en,!es translate source langage  to target"
             "!help - Aide"
+            "!fr , !it ,!de ,!es - Traduction "
+            "!time <location>   Heure locale"
+            "!solar <location>   Heure au soleil"
         )
         connection.privmsg(self.channel, help_text)
     def get_geo_location(self, location, connection):
@@ -272,19 +492,23 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             print(f"Error in get_geo_location: {e}")
             connection.privmsg(self.channel, "Une erreur est survenue lors de la génération du lien Google Maps.")
 
+ 
+
     def search_youtube(self, query, connection):
         ydl_opts = {
-            'format': 'best',
+            'format': 'bestaudio/best',  #  Prendre le meilleur format audio ou vidéo
             'quiet': True,
             'extract_flat': False,
             'default_search': 'auto',
             'youtube_include_dash_manifest': False,
             'http_headers': {'User-Agent': self.user_agent},
         }
+    
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 # Rechercher la vidéo
-                info_dict = ydl.extract_info("ytsearch:" + query, download=False)
+                info_dict = ydl.extract_info(f"ytsearch:{query}", download=False)
+            
                 if not info_dict.get('entries'):
                     connection.privmsg(self.channel, "Aucune vidéo trouvée pour cette recherche.")
                     return
@@ -312,53 +536,75 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                 message = (f"Résultat YouTube : {title} | Par : {uploader} | Durée : {formatted_duration} | "
                            f"Vues : {views:,} | Publié le : {formatted_date} | Lien : {url}")
                 connection.privmsg(self.channel, message)
+            
         except Exception as e:
             import traceback
             traceback.print_exc()
-            connection.privmsg(self.channel, "Erreur lors de la recherche YouTube.")
+            connection.privmsg(self.channel, f"Erreur lors de la recherche YouTube : {str(e)}")
 
 
-    def search_google(self, query, connection):
+    def search_google_old(self, query, connection):
         try:
-            headers = {'User-Agent': self.user_agent}
+            import time
+            import random
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36'
+            }
             url = f"https://www.google.fr/search?q={query}&hl=fr&gl=fr&lr=lang_fr"
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code != 200:
+                connection.privmsg(self.channel, f"Failed to fetch results. HTTP Status: {response.status_code}")
+                return
+
             soup = BeautifulSoup(response.text, 'html.parser')
             search_results = soup.find_all('div', class_='tF2Cxc')
+        
+            if not search_results:
+                print(f"HTML Content: {response.text[:500]}")  # Afficher un extrait pour débug
+
+                connection.privmsg(self.channel, "No results found. Google may have blocked the request.")
+                return
+
+            url_tag = search_results[0].find('a', href=True)
+            if not url_tag:
+                connection.privmsg(self.channel, "No URL found in the search results.")
+                return
+
+            actual_url = url_tag['href']
+            connection.privmsg(self.channel, f"Google: {actual_url}")
+
+            # Optionally get the title
+            title = self.get_page_title(actual_url)
+            
+            if title:
+                connection.privmsg(self.channel, f"Title: {title}")
+
+            # Optionally get the description
             descriptions = soup.find_all('div', class_='VwiC3b')
-
-            if search_results:
-                url_tag = search_results[0].find('a', href=True)
-                if url_tag:
-                    actual_url = url_tag['href']
-                    connection.privmsg(self.channel, f"Google: {actual_url}")
-
-                    title = self.get_page_title(actual_url)
-                    if title:
-                        connection.privmsg(self.channel, f"Title: {title}")
-
-                    if descriptions:
-                        description = descriptions[0].text.strip()
-                        if description:
-                            connection.privmsg(self.channel, f"Description: {description}")
-                        else:
-                            connection.privmsg(self.channel, "Description not found.")
-                    else:
-                        connection.privmsg(self.channel, "No description available.")
+            if descriptions:
+                description = descriptions[0].text.strip()
+                if description:
+                    connection.privmsg(self.channel, f"Description: {description}")
                 else:
-                    connection.privmsg(self.channel, "No URL found in the search results.")
+                    connection.privmsg(self.channel, "Description not found.")
             else:
-                connection.privmsg(self.channel, "No corresponding URL found on Google.")
+                connection.privmsg(self.channel, "No description available.")
+
+            # Sleep to avoid being detected as a bot
+            time.sleep(random.uniform(2, 5))
+
         except Exception as e:
             print(f"Error in search_google: {e}")
             connection.privmsg(self.channel, "An error occurred during the Google search.")
+
             
-    def search_google_new (self, query, connection):
+    def search_google (self, query, connection):
         try:
-            api_key = 'put your api here '  # Remplace par ta clé API
-            cx = 'id search tool'  # Remplace par ton ID moteur de recherche personnalisé
-            url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={api_key}&cx={cx}&hl=fr&lr=lang_fr"
+            api_key = self.google_api_key # Remplace par ta clé API
+            cx = self.cx  # Remplace par ton ID moteur de recherche personnalisé
+            url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={self.google_api_key}&cx={self.cx}&hl=fr&lr=lang_fr"
 
             # Afficher l'URL pour déboguer
             # print(f"Requesting URL: {url}")
@@ -424,7 +670,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         if message.startswith('!dico'):
             try:
                 word = message.split(' ', 1)[1].strip().lower()  # Gestion des majuscules/minuscules
-                definition = self.get_definition_larousse(word)
+                definition = self.get_definition_wiktionnaire(word)
                 if definition:
                     cleaned_definition = self.clean_message(f"Définition de {word}: {definition}")
                     self.send_message_in_chunks(connection, self.channel, cleaned_definition)
@@ -434,7 +680,29 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             except IndexError:
                 cleaned_message = self.clean_message("Usage: !dico <mot>")
                 self.send_message_in_chunks(connection, self.channel, cleaned_message) 
-                          
+    def get_definition_wiktionnaire(self, word):
+        """Scraping de Wiktionnaire pour obtenir une définition propre d'un mot"""
+        url = f"https://fr.wiktionary.org/wiki/{word}"
+        response = requests.get(url)
+    
+        if response.status_code == 200:
+             soup = BeautifulSoup(response.text, 'html.parser')
+
+             # Chercher la première section de définitions, généralement sous forme de liste
+             definition_section = soup.find('ol')
+             if definition_section:
+                # On récupère la première définition
+                first_definition = definition_section.find('li')
+                if first_definition:
+                    # On extrait uniquement le texte de la définition sans les citations
+                    definition_text = first_definition.get_text(separator=" ").strip()
+                
+                    # On élimine les parties indésirables comme les références et citations
+                    cleaned_definition = re.sub(r'(\[.*?\]|\(.*?\))', '', definition_text)
+                    return cleaned_definition
+            
+        return None
+                         
     def clean_message(self, message):
         # Nettoie les retours à la ligne et les espaces inutiles
         return message.replace('\r', '').replace('\n', '').strip()
@@ -485,6 +753,7 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         #return re.findall(r'https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F])|[-])+', message)
         #return re.findall(r'https?://(?:[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=%]+)', message)
 
+ 
     def get_page_title(self, url):
         try:
             response = requests.get(url, headers={'User-Agent': self.user_agent}, timeout=2)
@@ -496,10 +765,11 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             print(f"Request error occurred while fetching page title: {req_err}")
             return None
 
+ 
     def get_youtube_title(self, url):
         try:
             video_id = self.extract_video_id(url)
-            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={self.api_key}"
+            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={self.youtube_api_key}"
             response = requests.get(api_url)
             response.raise_for_status()
             data = response.json()
