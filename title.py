@@ -15,6 +15,28 @@ class MusicBot(irc.bot.SingleServerIRCBot):
         self.polling_thread.daemon = True
         self.polling_active = threading.Event()
         self.polling_active.set()  # Start with polling active
+        self.ensure_playing_thread = threading.Thread(target=self.ensure_music_playing)
+        self.ensure_playing_thread.daemon = True
+        self.ensure_playing_thread.start()
+
+    def ensure_music_playing(self):
+        """Ensures that the Music app is playing something. If not, starts the 'général' playlist."""
+        while True:
+            self.polling_active.wait()  # Attends si le polling est en pause
+            is_playing_script = 'tell application "Music" to player state is playing'
+            print("Vérification de l'état de lecture...") 
+            is_playing, error = self.execute_applescript(is_playing_script)
+            if error:
+                print(f"Erreur lors de la vérification de l'état de lecture : {error}")
+            elif is_playing != "true":
+                print("Aucune musique n'est en lecture. Lancement de la playlist 'général'.")
+                _, error = self.execute_applescript('tell application "Music" to pause')
+                time.sleep(1)
+                play_playlist_script = 'tell application "Music" to play '
+                _, error = self.execute_applescript(play_playlist_script)
+                if error:
+                    print(f"Erreur lors de la lecture de la playlist 'général' : {error}")
+            time.sleep(10)  # Vérifie toutes les 10 secondes
 
     def on_welcome(self, connection, event):
         connection.join(self.channel)
@@ -131,7 +153,7 @@ class MusicBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(self.channel, "La lecture de la musique a été mise en pause.")
 
     def handle_play_command(self, connection):
-        """Handles the !play command to start playing music."""
+        """Handles the handle_play_command command to start playing music."""
         _, error = self.execute_applescript('tell application "Music" to play')
         if error:
             connection.privmsg(self.channel, f"Erreur: {error}")
