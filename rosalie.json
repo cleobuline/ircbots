@@ -1,0 +1,7 @@
+{
+    "youtube_api_key": "VOTRE_CLE_YOUTUBE",
+    "weather_api_key": "VOTRE_CLE_METEO",
+    "news_api_key": "VOTRE_CLE_NEWS",
+    "news_api_key": "VOTRE_CLE_Google",
+    "cx": "VOTRE_CLE_MOTEUR_DE_RECHERCHE"
+}
