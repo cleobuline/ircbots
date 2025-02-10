@@ -6,6 +6,7 @@ import requests
 import time
 from pylatexenc.latex2text import LatexNodes2Text
 from collections import defaultdict, deque
+from pylatexenc.latex2text import LatexNodes2Text
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
@@ -79,12 +80,13 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             # Vérifier la réponse de l'API
             if response.choices and response.choices[0].message:
                 bot_response = response.choices[0].message.content.strip()
-                self.contexts[user].append(f"Bot: {bot_response}")
+                readable_text = LatexNodes2Text().latex_to_text(bot_response)
+                self.contexts[user].append(f"Bot: {readable_text}")
                 
 
                 # Envoyer la réponse à l'utilisateur
                 #connection.privmsg(user, bot_response)
-                send_message_in_chunks(self, connection, user, bot_response)
+                send_message_in_chunks(self, connection, user, readable_text)
                 
 
         except Exception as e:
