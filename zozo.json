@@ -9,4 +9,7 @@
     "max_num_line": 20,
     "admin_user": "your_admin_username",
     "imgbb_api_key": "your_imgbb_api_key"
+    "grok_api_key": "grok api key ",
+    "claude_api_key": "claude sonnet api key"
+
 }
