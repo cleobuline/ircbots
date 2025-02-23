@@ -4,7 +4,7 @@
     "server": "labynet.fr",
     "port": 6667,
     "api_key": "your_openai_api_key",
-    "web_url": "your url //generated_image.png",
+    "web_url": "your url /generated_image.png",
     "image_filename": "/path/to/the/www/folder/generated_image.png",
     "max_num_line": 20,
     "admin_user": "your_admin_username",
