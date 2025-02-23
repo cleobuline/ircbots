@@ -21,6 +21,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.api_key = config["api_key"]
         self.max_num_line = config["max_num_line"]
         self.imgbb_api_key = config["imgbb_api_key"]
+        self.web_url = config["display_url"]
+        self.image_filename= config["image_filename"]
         self.admin_user = config["admin_user"]
         self.grok_api_key = config["grok_api_key"]
         self.blocked_users = set()
@@ -127,14 +129,13 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         if context_entry:
             context = "\n".join(context_entry[2][:-1])
             last_message = context_entry[2][-1]
-            last_message_with_tag = f"{self.tag} {last_message}" if self.tag else last_message
             prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
             response = openai.ChatCompletion.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt_text}]
             )
-            #generated_text = response.choices[0].message.content.strip()
-            generated_text = f"{self.tag} {response.choices[0].message.content.strip()}" if self.tag else response.choices[0].message.content.strip()
+            generated_text = response.choices[0].message.content.strip()
+            #generated_text = f"{self.tag} {response.choices[0].message.content.strip()}" if self.tag else response.choices[0].message.content.strip()
 
             # Convertir le texte LaTeX en texte lisible
             readable_text = LatexNodes2Text().latex_to_text(generated_text)
@@ -311,13 +312,11 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             image_url = response['data'][0]['url']
 
             image_response = requests.get(image_url)
-            image_filename = "/var/www/html/generated_image.png"
 
-            with open(image_filename, "wb") as image_file:
+            with open(self.image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
 
-            web_url = "http://labynet.fr/generated_image.png"
-            connection.privmsg(channel, web_url)
+            connection.privmsg(channel, sef.web_url)
         except openai.error.OpenAIError as e:
             connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
         except requests.exceptions.RequestException as e:
