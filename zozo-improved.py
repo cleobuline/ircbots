@@ -21,10 +21,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.api_key = config["api_key"]
         self.max_num_line = config["max_num_line"]
         self.imgbb_api_key = config["imgbb_api_key"]
+        self.web_url = config["display_url"]
+        self.image_filename= config["image_filename"]
         self.admin_user = config["admin_user"]
+        self.grok_api_key = config["grok_api_key"]
         self.blocked_users = set()
         self.user_contexts = []  # List to store context information
         self.model = "gpt-4o-mini"
+        self.tag = ""
         openai.api_key = self.api_key
         self.imgbb_client = imgbbpy.SyncClient(self.imgbb_api_key)
         if not os.path.exists("conversations"):
@@ -38,10 +42,19 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         user = event.source.nick
         channel = event.target
         bot_nickname = self.connection.get_nickname()
-        if message.strip().startswith(bot_nickname + ":"):
+        if message.startswith("grok"):
+            prompt = message.split("grok", 1)[1].strip()
+            self.update_context(channel, user, prompt)
+            response = self.generate_response_grok(channel, user, prompt)
+            self.send_message_in_chunks(connection, channel, response)
+            #connection.privmsg(channel, f"Grok: {response}")
+        elif message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             command, args = self.parse_command(message)
-            if command == "help":
+            if command == "tag":
+                self.tag = args  # Mettre à jour le tag
+                connection.privmsg(channel, f"Tag mis à jour: {self.tag}")
+            elif command == "help":
                 self.send_help_message(connection, channel)
             elif command == "raz":
                 self.reset_user_context(channel, user)
@@ -64,6 +77,9 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.change_model(channel, user, args)
             elif command == "list-models":
                 self.list_models(channel)
+            elif command == "current":
+                connection.privmsg(channel, f"Modèle actuel utilisé : {self.model}")
+
             elif command == "local":
                 self.generate_image_local(connection, channel, args)
             elif command == "image":
@@ -119,7 +135,35 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 messages=[{"role": "user", "content": prompt_text}]
             )
             generated_text = response.choices[0].message.content.strip()
+            #generated_text = f"{self.tag} {response.choices[0].message.content.strip()}" if self.tag else response.choices[0].message.content.strip()
+
             # Convertir le texte LaTeX en texte lisible
+            readable_text = LatexNodes2Text().latex_to_text(generated_text)
+            return readable_text
+        return ""
+        
+    def generate_response_grok (self, channel, user, message):
+        api_key = self.grok_api_key
+        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
+        headers = {'Authorization': f'Bearer {api_key}'}
+
+        if context_entry:
+            context = "\n".join(context_entry[2][:-1])
+            last_message = context_entry[2][-1]
+             
+            prompt_text = f"Contexte:\n{context}\n\nRépond seulement à la dernière ligne en tenant compte du contexte précédent.\nDernière ligne: {last_message}"
+            data = {
+            "model": "grok-beta",  # Remplacez par le modèle correct si nécessaire.
+            "messages": [{"role": "user", "content": prompt_text}]
+            }
+            response = requests.post('https://api.x.ai/v1/chat/completions', json=data, headers=headers)
+            #generated_text = response.choices[0].message.content.strip()
+
+            data = response.json()
+            if 'choices' in data and data['choices']:
+                generated_text = data['choices'][0]['message']['content']
+            else:
+                generated_text = "Erreur ou réponse non disponible."
             readable_text = LatexNodes2Text().latex_to_text(generated_text)
             return readable_text
         return ""
@@ -174,14 +218,14 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def unblock_user(self, user):
         self.blocked_users.discard(user)
     def change_model(self, channel, user, model):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview","o1","o3-mini", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         if model in valid_models:
             self.model = model
             self.connection.privmsg(channel, f"Modèle changé à {model}.")
         else:
             self.connection.privmsg(channel, f"Modèle {model} invalide. Modèles valides : {', '.join(valid_models)}.")
     def list_models(self, channel):
-        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
+        valid_models = ["gpt-3.5-turbo", "gpt-4", "o1-mini", "o1-preview", "o1","o3-mini" ,"gpt-4o", "gpt-4o-2024-08-06", "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"]
         self.connection.privmsg(channel, f"Modèles valides : {', '.join(valid_models)}.")
         
     def summarize_url(self, connection, channel, url):
@@ -215,9 +259,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def generate_image_tiny(self, connection, channel, prompt):
         try:
             response = openai.Image.create(
+                model = "dall-e-3",
                 prompt=prompt,
                 n=1,
-                size="512x512"
+                size="1024x1024"
             )
             image_url = response['data'][0]['url']
             shortener = pyshorteners.Shortener()
@@ -230,9 +275,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def generate_image_imgbb(self, connection, channel, prompt):
         try:
             response = openai.Image.create(
+                model = "dall-e-3",
                 prompt=prompt,
                 n=1,
-                size="512x512"
+                size="1024x1024"
             )
             image_url = response['data'][0]['url']
 
@@ -257,14 +303,20 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
     def generate_image_local(self, connection, channel, prompt):
         try:
-            response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
+            response = openai.Image.create(
+                model = "dall-e-3",
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
             image_url = response['data'][0]['url']
+
             image_response = requests.get(image_url)
-            image_filename = "/var/www/html/generated_image.png"
-            with open(image_filename, "wb") as image_file:
+
+            with open(self.image_filename, "wb") as image_file:
                 image_file.write(image_response.content)
-            web_url = "http://labynet.fr/generated_image.png"
-            connection.privmsg(channel, web_url)
+
+            connection.privmsg(channel, sef.web_url)
         except openai.error.OpenAIError as e:
             connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
         except requests.exceptions.RequestException as e:
