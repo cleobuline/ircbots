@@ -19,12 +19,15 @@ import random
 import subprocess
 import os 
 import json 
+from skyfield.api import load
+from datetime import datetime
+import pytz
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.server = "labynet.fr"
+        self.server = "irc.tchat.cafe"
         self.port = 6667
-        self.channel = "#labynet"
+        self.channel = "#cafe"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
@@ -59,7 +62,92 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
     def on_error(self, connection, event):
         print(f"Erreur détectée : {event}. Tentative de reconnexion...")
         self.reconnect(connection)
+    def get_moon_phas_old(self):
+        # Cycle lunaire : 29.53 jours = 2953 centièmes
+        now = datetime.utcnow()
+        epoch = datetime(2000, 1, 6, 18)  # Référence astronomique pour la nouvelle lune
+        days = (now - epoch).total_seconds() / 86400.0
+        position = int((days * 100) % 2953)
 
+        # Phase
+        if position < 300:
+            phase = 0; name = "Nouvelle lune"; icon = "🌑"; msg = "La lune se cache, parfait pour observer les étoiles !"
+        elif position < 1000:
+            phase = 1; name = "Croissant montant"; icon = "🌒"; msg = "Une jeune lune, un nouveau départ à Paris !"
+        elif position < 1476:
+            phase = 2; name = "Premier quartier"; icon = "🌓"; msg = "La lune guide vos soirées !"
+        elif position < 1845:
+            phase = 3; name = "Gibbeuse croissante"; icon = "🌔"; msg = "La lune grossit, rêvez grand ce soir !"
+        elif position < 2214:
+            phase = 4; name = "Pleine lune"; icon = "🌕"; msg = "Admirez-la sur les toits de Paris !"
+        elif position < 2583:
+            phase = 5; name = "Gibbeuse décroissante"; icon = "🌖"; msg = "La lune décroît, une nuit douce vous attend !"
+        elif position < 2952:
+            phase = 6; name = "Dernier quartier"; icon = "🌗"; msg = "Profitez de la sérénité !"
+        else:
+            phase = 7; name = "Croissant descendant"; icon = "🌘"; msg = "La lune s'efface, une nuit calme à venir !"
+
+        # Illumination estimée (simplifiée)
+        if position <= 2214:
+            illumination = int(position * 100 / 2214)
+        else:
+            illumination = 100 - int((position - 2214) * 100 / 739)
+
+        return f"{icon} {name} – {illumination}% illuminée. {msg}"
+    def get_moon_phase_new(self):
+        ts = load.timescale()
+        t = ts.from_datetime(datetime.utcnow().replace(tzinfo=pytz.UTC))
+        eph = load('de421.bsp')
+        sun, moon, earth = eph['sun'], eph['moon'], eph['earth']
+        e = earth.at(t)
+        _, mlong, _ = e.observe(moon).apparent().ecliptic_latlon()
+        _, slong, _ = e.observe(sun).apparent().ecliptic_latlon()
+        phase_angle = (mlong.degrees - slong.degrees) % 360
+        illumination = (1 - math.cos(math.radians(phase_angle))) / 2 * 100
+
+        if phase_angle < 45:
+            name = "Nouvelle lune"; icon = "🌑"
+        elif phase_angle < 135:
+            name = "Croissant montant"; icon = "🌒"
+        elif phase_angle < 225:
+            name = "Pleine lune"; icon = "🌕"
+        else:
+            name = "Croissant descendant"; icon = "🌘"
+
+        return f"{icon} {name} – {int(illumination)}% illuminée."
+ 
+ 
+    def get_moon_phase(self):
+        ts = load.timescale()
+        t = ts.from_datetime(datetime.utcnow().replace(tzinfo=pytz.UTC))
+        eph = load('de421.bsp')
+        sun, moon, earth = eph['sun'], eph['moon'], eph['earth']
+
+        e = earth.at(t)
+        _, mlong, _ = e.observe(moon).apparent().ecliptic_latlon()
+        _, slong, _ = e.observe(sun).apparent().ecliptic_latlon()
+        phase_angle = (mlong.degrees - slong.degrees) % 360
+
+        illumination = (1 - math.cos(math.radians(phase_angle))) / 2 * 100
+
+        if phase_angle < 10 or phase_angle > 350:
+            name = "Nouvelle lune"; icon = "🌑"; msg = "La lune se cache, parfait pour observer les étoiles !"
+        elif phase_angle < 80:
+            name = "Croissant montant"; icon = "🌒"; msg = "Une jeune lune, un nouveau départ à Paris !"
+        elif phase_angle < 100:
+            name = "Premier quartier"; icon = "🌓"; msg = "La lune guide vos soirées !"
+        elif phase_angle < 170:
+            name = "Gibbeuse croissante"; icon = "🌔"; msg = "La lune grossit, rêvez grand ce soir !"
+        elif phase_angle < 190:
+            name = "Pleine lune"; icon = "🌕"; msg = "Admirez-la sur les toits de Paris !"
+        elif phase_angle < 260:
+            name = "Gibbeuse décroissante"; icon = "🌖"; msg = "La lune décroît, une nuit douce vous attend !"
+        elif phase_angle < 280:
+            name = "Dernier quartier"; icon = "🌗"; msg = "Profitez ⟷ de la sérénité !"
+        else:
+            name = "Croissant descendant"; icon = "🌘"; msg = "La lune s'efface, une nuit calme à venir !"
+
+        return f"{icon} {name} – {int(illumination)}% illuminée. {msg}"
     def reconnect(self, connection):
         """Tentative de reconnexion au serveur IRC."""
         while True:
@@ -178,6 +266,9 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                     if(title):
                         #title = title.encode('latin1').decode('utf-8')
                         connection.privmsg(self.channel, f"Title: {title}")
+            if message.strip() == "!moon":
+                phase_info = self.get_moon_phase()
+                connection.privmsg(self.channel, phase_info)
 
             if message.startswith('!joke'):
                 try:
