@@ -22,12 +22,13 @@ import json
 from skyfield.api import load
 from datetime import datetime
 import pytz
-
+from skyfield.api import load, Topos, utc
+from skyfield import almanac
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.server = "irc.tchat.cafe"
+        self.server = "labynet.fr"
         self.port = 6667
-        self.channel = "#cafe"
+        self.channel = "#labynet"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
@@ -123,13 +124,14 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         eph = load('de421.bsp')
         sun, moon, earth = eph['sun'], eph['moon'], eph['earth']
 
+        # Phase calculation
         e = earth.at(t)
         _, mlong, _ = e.observe(moon).apparent().ecliptic_latlon()
         _, slong, _ = e.observe(sun).apparent().ecliptic_latlon()
         phase_angle = (mlong.degrees - slong.degrees) % 360
-
         illumination = (1 - math.cos(math.radians(phase_angle))) / 2 * 100
 
+        # Moon phase determination
         if phase_angle < 10 or phase_angle > 350:
             name = "Nouvelle lune"; icon = "🌑"; msg = "La lune se cache, parfait pour observer les étoiles !"
         elif phase_angle < 80:
@@ -143,11 +145,52 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
         elif phase_angle < 260:
             name = "Gibbeuse décroissante"; icon = "🌖"; msg = "La lune décroît, une nuit douce vous attend !"
         elif phase_angle < 280:
-            name = "Dernier quartier"; icon = "🌗"; msg = "Profitez ⟷ de la sérénité !"
+            name = "Dernier quartier"; icon = "🌗"; msg = "Profitez de la sérénité !"
         else:
             name = "Croissant descendant"; icon = "🌘"; msg = "La lune s'efface, une nuit calme à venir !"
 
-        return f"{icon} {name} – {int(illumination)}% illuminée. {msg}"
+        # Moonrise and moonset calculation for Paris (48.8566°N, 2.3522°E)
+        observer = Topos(latitude_degrees=48.8566, longitude_degrees=2.3522)
+        t0 = ts.utc(t.utc_datetime().date())  # Start of the day
+        t1 = ts.utc(t.utc_datetime().date() + timedelta(days=1))  # End of the day
+
+        # Calculate moonrise and moonset
+        f = almanac.risings_and_settings(eph, moon, observer)
+        times, events = almanac.find_discrete(t0, t1, f)
+
+        moonrise, moonset = None, None
+        for ti, event in zip(times, events):
+            if event:  # True for rising
+                moonrise = ti.utc_datetime().strftime('%H:%M')
+            else:  # False for setting
+                moonset = ti.utc_datetime().strftime('%H:%M')
+
+        # Convert to local time (CEST, UTC+2)
+        paris_tz = pytz.timezone('Europe/Paris')
+        if moonrise:
+            moonrise_dt = datetime.strptime(moonrise, '%H:%M').replace(
+                year=t.utc_datetime().year, month=t.utc_datetime().month, day=t.utc_datetime().day, tzinfo=pytz.UTC
+            )
+            moonrise = moonrise_dt.astimezone(paris_tz).strftime('%H:%M')
+        if moonset:
+            moonset_dt = datetime.strptime(moonset, '%H:%M').replace(
+                year=t.utc_datetime().year, month=t.utc_datetime().month, day=t.utc_datetime().day, tzinfo=pytz.UTC
+            )
+            # Adjust for moonset on previous day if necessary
+            if moonset_dt.hour < 12 and (moonrise and int(moonrise[:2]) > 12):
+                moonset_dt -= timedelta(days=1)
+            moonset = moonset_dt.astimezone(paris_tz).strftime('%H:%M')
+
+        # Format the output
+        rise_set_info = ""
+        if moonrise:
+            rise_set_info += f" Lever: {moonrise} CEST"
+        if moonset:
+            rise_set_info += f" Coucher: {moonset} CEST"
+        if not moonrise and not moonset:
+            rise_set_info = " Lever/Coucher non disponibles aujourd'hui."
+
+        return f"{icon} {name} – {int(illumination)}% illuminée. {msg}{rise_set_info}"
     def reconnect(self, connection):
         """Tentative de reconnexion au serveur IRC."""
         while True:
