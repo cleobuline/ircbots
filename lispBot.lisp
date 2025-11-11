@@ -1,5 +1,5 @@
 ;;;; Bot IRC SBCL — Version FINALE ULTRA ROBUSTE
-;;;; Auteur: Grok (xAI) — Novembre 2025
+;;;; Auteurs: cleobuline with the help of Grok (xAI) — Novembre 2025
 ;;;; Fonctionne sur SBCL + Quicklisp
 
 (unless (find-package :ql) (load "/root/quicklisp/setup.lisp"))
@@ -18,7 +18,7 @@
 ;;;; === Configuration ===
 (defvar *server* "irc.libera.chat")
 (defvar *port* 6667)
-(defvar *nick* "LispBot")
+(defvar *nick* "lisp")
 (defvar *channels* '("#lisp-experimental"))
 (defvar *socket* nil)
 (defvar *stream* nil)
@@ -157,18 +157,24 @@
       ((scan "^!eval (.+)" txt)
        (safe-eval (subseq txt (length "!eval ")) sender dest))
 
-      ((and (member sender *admin-users* :test #'string=)
-            (scan "^!addcmd\\s+!([^\\s]+)\\s+\"?(.+)\"?$" txt))
-       (multiple-value-bind (_ regs)
-           (scan-to-strings "^!addcmd\\s+!([^\\s]+)\\s+\"?(.+)\"?$" txt)
-         (let ((cmd-name (%normalize-name (aref regs 0)))
-               (msg (string-trim '(#\Space #\Tab #\Return #\Linefeed) (aref regs 1))))
-           (if (and (plusp (length cmd-name)) (plusp (length msg)))
-               (progn
-                 (add-command cmd-name msg)
-                 (send-msg (format nil "Commande !~a ajoutée !" cmd-name))
-                 (save-commands))
-               (send-msg "Erreur : nom ou message vide.")))))
+ 
+((and (member sender *admin-users* :test #'string=)
+      ;; 1er groupe = nom, 2e = message cité, 3e = message non-cité
+      (scan "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt))
+ (multiple-value-bind (_ regs)
+     (scan-to-strings "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt)
+   (let* ((cmd-name (%normalize-name (aref regs 0)))
+          (raw2 (aref regs 1))
+          (raw3 (aref regs 2))
+          (msg (string-trim '(#\Space #\Tab #\Return #\Linefeed)
+                            (or raw2 raw3 ""))))
+     (if (and (plusp (length cmd-name)) (plusp (length msg)))
+         (progn
+           (add-command cmd-name msg)
+           (send-msg (format nil "Commande !~a ajoutée !" cmd-name))
+           (save-commands))
+         (send-msg "Erreur : nom ou message vide.")))))
+
 
       ((and (member sender *admin-users* :test #'string=) (string= txt "!save"))
        (save-commands))
@@ -176,14 +182,24 @@
       ((and (member sender *admin-users* :test #'string=) (string= txt "!load"))
        (load-commands))
 
-      ((and (member sender *admin-users* :test #'string=)
-            (scan "^!fork\\s+(#.+)$" txt))
-       (let ((chan (aref (scan-to-strings "^!fork\\s+(#.+)$" txt) 0)))
-         (unless (member chan *channels* :test #'string=)
+;; Remplace l'ancienne branche !fork par celle-ci (parse sans regexp)
+((and (member sender *admin-users* :test #'string=)
+      (scan "^!fork\\b" txt))
+ (let* ((parts (ppcre:split "\\s+" txt))
+        (chan  (when (>= (length parts) 2)
+                 (string-trim '(#\Space #\Tab #\Return #\Linefeed)
+                              (second parts)))))
+   (if (and chan (> (length chan) 1) (char= (char chan 0) #\#))
+       (progn
+         ;; évite doublons, insensible à la casse
+         (unless (member chan *channels* :test #'string-equal)
            (push chan *channels*)
-           (join-channel chan)
-           (send-msg-to chan (format nil "Je suis dans ~a !" chan))
-           (send-msg (format nil "Rejoint ~a" chan)))))
+           (join-channel chan))
+         ;; confirmations explicites
+         (send-msg (format nil "Rejoint ~a" chan))
+         (send-msg-to chan (format nil "Je suis dans ~a !" chan)))
+       (send-msg "Usage: !fork #canal"))))
+
 
       ((and (member sender *admin-users* :test #'string=) (string= txt "!cmds"))
        (let ((cmds (loop for k being the hash-keys of *command-sources* collect k)))
