@@ -235,6 +235,9 @@
       ;; Bonjour
       ((scan "^!hello\\b" txt)
        (send-msg (format nil "Salut ~a ! Lisp est vivant." sender)))
+((string= txt "!help")
+ (send-msg
+  "Commandes: !hello !eval !addcmd !save !load !fork !cmds !funcs !delfunc !help — Ex: !eval (date)."))
 
       ;; Évaluation safe
       ((scan "^!eval (.+)" txt)
