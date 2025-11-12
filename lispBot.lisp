@@ -1,5 +1,4 @@
-;;;; Bot IRC SBCL — Version FINALE ULTRA ROBUSTE
-;;;; Auteurs: cleobuline with the help of Grok (xAI) — Novembre 2025
+;;;; Bot IRC SBCL — Version FINALE ULTRA ROBUSTE + Persistance DEFUN (liste/suppression)
 ;;;; Fonctionne sur SBCL + Quicklisp
 
 (unless (find-package :ql) (load "/root/quicklisp/setup.lisp"))
@@ -18,13 +17,15 @@
 ;;;; === Configuration ===
 (defvar *server* "irc.libera.chat")
 (defvar *port* 6667)
-(defvar *nick* "lisp")
+(defvar *nick* "LispBot")
 (defvar *channels* '("#lisp-experimental"))
 (defvar *socket* nil)
 (defvar *stream* nil)
 (defvar *write-lock* (make-lock "irc-write-lock"))
+(defvar *persist-lock* (make-lock "persist-lock"))
 (defvar *admin-users* '("labynet" "patricia" "cleobuline"))
 (defvar *commands-file* "commands.lisp")
+(defvar *user-funcs-file* "user-funcs.lisp")
 
 ;; Sources persistées (nom -> code), et fonctions actives (nom -> fn)
 (defvar *command-sources* (make-hash-table :test #'equal))
@@ -62,7 +63,7 @@
     (join-channel c)
     (format t "Rejoint ~a~%" c)))
 
-;;;; === Persistance ===
+;;;; === Persistance des commandes ===
 (defun save-commands ()
   (with-open-file (out *commands-file* :direction :output :if-exists :supersede)
     (format out ";;; Commandes du bot — généré automatiquement~%")
@@ -80,6 +81,83 @@
     (let ((*package* (find-package :lispbot)))  ; IMPORTANT: exécuter add-command dans :lispbot
       (load *commands-file* :verbose nil))
     (send-msg (format nil "Chargé ~d commande(s)" (hash-table-count *command-sources*)))))
+
+;;;; === Persistance des DEFUN via !eval (anti-doublon) ===
+(defun persist-defuns-in-form (form)
+  "Détecte toutes les (defun ...) dans FORM et les ajoute au fichier persistant
+   si elles ne sont pas déjà présentes."
+  (labels ((collect-defuns (f acc)
+             (cond
+               ((and (consp f) (eq (first f) 'defun)) (cons f acc))
+               ((consp f) (collect-defuns (rest f) (collect-defuns (first f) acc)))
+               (t acc)))
+           (defun-name (d) (second d)))
+    (let* ((defs (nreverse (collect-defuns form '()))))
+      (when defs
+        (with-lock-held (*persist-lock*)
+          ;; lire les noms déjà présents
+          (let ((seen (make-hash-table :test #'equal)))
+            (when (probe-file *user-funcs-file*)
+              (with-open-file (in *user-funcs-file* :direction :input)
+                (loop for f = (read in nil :eof)
+                      until (eq f :eof)
+                      when (and (consp f) (eq (first f) 'defun))
+                      do (setf (gethash (string-downcase (symbol-name (second f))) seen) t))))
+            ;; ajouter uniquement les nouveaux
+            (with-open-file (out *user-funcs-file*
+                                 :direction :output
+                                 :if-exists :append
+                                 :if-does-not-exist :create)
+              (dolist (d defs)
+                (let ((nm (string-downcase (symbol-name (second d)))))
+                  (unless (gethash nm seen)
+                    (format out "~s~%" d)
+                    (setf (gethash nm seen) t)))))))))))
+
+ 
+(defun list-user-funcs ()
+  "Retourne la liste des fonctions persistées (symboles dans le package :lispbot)."
+  (when (probe-file *user-funcs-file*)
+    (let ((*package* (find-package :lispbot)))   ; <<< clé : lire dans :lispbot, même en thread
+      (with-open-file (in *user-funcs-file* :direction :input)
+        (loop for f = (read in nil :eof)
+              until (eq f :eof)
+              when (and (consp f) (eq (first f) 'defun))
+              collect (second f))))))
+
+
+;; Remplace delete-user-func par ceci
+(defun delete-user-func (name)
+  "Supprime une fonction du fichier et de la mémoire."
+  (let* ((target-up (string-upcase (string-trim '(#\Space #\Tab #\Return #\Linefeed) name)))
+         (sym (intern target-up :lispbot))
+         (fns (list-user-funcs)))
+    (if (not (some (lambda (s) (string-equal (symbol-name s) target-up)) fns))
+        (send-msg (format nil "Aucune fonction nommée ~a." name))
+        (progn
+          ;; Réécrire le fichier sans la defun ciblée, en LISPbot pour être cohérent
+          (with-lock-held (*persist-lock*)
+            (let ((*package* (find-package :lispbot)))
+              (let ((tmp (make-string-output-stream)))
+                (with-open-file (in *user-funcs-file* :direction :input)
+                  (loop for f = (read in nil :eof)
+                        until (eq f :eof)
+                        unless (and (consp f) (eq (first f) 'defun)
+                                    (string-equal (symbol-name (second f)) target-up))
+                        do (format tmp "~s~%" f)))
+                (with-open-file (out *user-funcs-file*
+                                     :direction :output :if-exists :supersede)
+                  (princ (get-output-stream-string tmp) out)))))
+          ;; Dé-lier la fonction en mémoire
+          (ignore-errors (fmakunbound sym))
+          (send-msg (format nil "Fonction ~a supprimée." name))))))
+
+
+(defun load-user-funcs ()
+  (when (probe-file *user-funcs-file*)
+    (let ((*package* (find-package :lispbot)))
+      (load *user-funcs-file* :verbose nil)
+      (send-msg (format nil "Fonctions utilisateur chargées depuis ~a" *user-funcs-file*)))))
 
 ;;;; === Sécurité & Éval ===
 (defun unsafe-form-p (form)
@@ -117,6 +195,9 @@
         (when (and danger (not is-admin))
           (send-msg-to dest "Forme interdite pour votre niveau d'utilisateur (I/O ou exécution détectée).")
           (return-from safe-eval :forbidden))
+        ;; Persister toutes les DEFUN détectées (anti-doublon intégré)
+        (persist-defuns-in-form form)
+        ;; Évaluation
         (let ((result (eval form)))
           (cond
             ((stringp result) (send-msg-to dest result))
@@ -126,7 +207,7 @@
       (send-msg-to (or target-chan (first *channels*))
                    (format nil "Erreur ~a: ~a" sender e)))))
 
-;;;; === Commandes dynamiques ===
+;;;; === Commandes dynamiques (hash-table) ===
 (defun %normalize-name (s)
   (string-downcase (string-trim '(#\Space #\Tab #\Return #\Linefeed) s)))
 
@@ -147,66 +228,68 @@
 
 ;;;; === Gestion des commandes (ULTRA ROBUSTE) ===
 (defun handle-command (sender dest text)
-  ;; Normalise la ligne (supprime CR/LF/espaces parasites)
+  ;; Normalise la ligne
   (let* ((*current-target* dest)
          (txt (string-trim '(#\Space #\Tab #\Return #\Linefeed) text)))
     (cond
+      ;; Bonjour
       ((scan "^!hello\\b" txt)
        (send-msg (format nil "Salut ~a ! Lisp est vivant." sender)))
 
+      ;; Évaluation safe
       ((scan "^!eval (.+)" txt)
        (safe-eval (subseq txt (length "!eval ")) sender dest))
 
- 
-((and (member sender *admin-users* :test #'string=)
-      ;; 1er groupe = nom, 2e = message cité, 3e = message non-cité
-      (scan "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt))
- (multiple-value-bind (_ regs)
-     (scan-to-strings "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt)
-   (let* ((cmd-name (%normalize-name (aref regs 0)))
-          (raw2 (aref regs 1))
-          (raw3 (aref regs 2))
-          (msg (string-trim '(#\Space #\Tab #\Return #\Linefeed)
-                            (or raw2 raw3 ""))))
-     (if (and (plusp (length cmd-name)) (plusp (length msg)))
-         (progn
-           (add-command cmd-name msg)
-           (send-msg (format nil "Commande !~a ajoutée !" cmd-name))
-           (save-commands))
-         (send-msg "Erreur : nom ou message vide.")))))
+      ;; Ajout de commande : guillemets optionnels, pas de " fantôme
+      ((and (member sender *admin-users* :test #'string=)
+            (scan "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt))
+       (multiple-value-bind (_ regs)
+           (scan-to-strings "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt)
+         (let* ((cmd-name (%normalize-name (aref regs 0)))
+                (raw2 (aref regs 1))
+                (raw3 (aref regs 2))
+                (msg (string-trim '(#\Space #\Tab #\Return #\Linefeed)
+                                  (or raw2 raw3 ""))))
+           (if (and (plusp (length cmd-name)) (plusp (length msg)))
+               (progn
+                 (add-command cmd-name msg)
+                 (send-msg (format nil "Commande !~a ajoutée !" cmd-name))
+                 (save-commands))
+               (send-msg "Erreur : nom ou message vide.")))))
 
-
+      ;; Save/Load commandes
       ((and (member sender *admin-users* :test #'string=) (string= txt "!save"))
        (save-commands))
-
       ((and (member sender *admin-users* :test #'string=) (string= txt "!load"))
        (load-commands))
 
-;; Remplace l'ancienne branche !fork par celle-ci (parse sans regexp)
-((and (member sender *admin-users* :test #'string=)
-      (scan "^!fork\\b" txt))
- (let* ((parts (ppcre:split "\\s+" txt))
-        (chan  (when (>= (length parts) 2)
-                 (string-trim '(#\Space #\Tab #\Return #\Linefeed)
-                              (second parts)))))
-   (if (and chan (> (length chan) 1) (char= (char chan 0) #\#))
-       (progn
-         ;; évite doublons, insensible à la casse
-         (unless (member chan *channels* :test #'string-equal)
-           (push chan *channels*)
-           (join-channel chan))
-         ;; confirmations explicites
-         (send-msg (format nil "Rejoint ~a" chan))
-         (send-msg-to chan (format nil "Je suis dans ~a !" chan)))
-       (send-msg "Usage: !fork #canal"))))
+      ;; Fork robuste (split sans regexp)
+      ((and (member sender *admin-users* :test #'string=)
+            (scan "^!fork\\b" txt))
+       (let* ((parts (ppcre:split "\\s+" txt))
+              (chan  (when (>= (length parts) 2)
+                       (string-trim '(#\Space #\Tab #\Return #\Linefeed)
+                                    (second parts)))))
+         (if (and chan (> (length chan) 1) (char= (char chan 0) #\#))
+             (progn
+               (unless (member chan *channels* :test #'string-equal)
+                 (push chan *channels*)
+                 (join-channel chan))
+               (send-msg (format nil "Rejoint ~a" chan))
+               (send-msg-to chan (format nil "Je suis dans ~a !" chan)))
+             (send-msg "Usage: !fork #canal"))))
 
+      ;; Liste/Suppression des fonctions persistées
+      ((string= txt "!funcs")
+       (let ((fns (list-user-funcs)))
+         (if fns
+             (send-msg (format nil "Fonctions sauvegardées (~d): ~{~a~^, ~}" (length fns) fns))
+             (send-msg "Aucune fonction sauvegardée."))))
 
-      ((and (member sender *admin-users* :test #'string=) (string= txt "!cmds"))
-       (let ((cmds (loop for k being the hash-keys of *command-sources* collect k)))
-         (send-msg
-          (if cmds
-              (format nil "Commandes (~d): ~{~a~^, ~}" (length cmds) (sort cmds #'string<))
-              "Aucune commande personnalisée."))))
+      ((scan "^!delfunc\\s+(.+)" txt)
+       (multiple-value-bind (_ regs)
+           (scan-to-strings "^!delfunc\\s+(.+)" txt)
+         (delete-user-func (aref regs 0))))
 
       ;; Appel générique: !<nom>
       ((scan "^!([A-Za-z0-9_-]+)\\s*$" txt)
@@ -214,7 +297,7 @@
               (cmd-name (%normalize-name cmd-name-raw)))
          ;; 1) on tente la table de fonctions
          (or (call-command cmd-name)
-             ;; 2) fallback béton: si on a la source, on envoie directement
+             ;; 2) fallback : si on a la source, on envoie directement
              (let ((src (gethash cmd-name *command-sources*)))
                (if src
                    (progn (send-msg src) t)
@@ -242,6 +325,9 @@
 (defun start-bot ()
   (format t "Démarrage du bot...~%")
   (connect-bot)
+  ;; Charger d'abord les fonctions utilisateur persistées
+  (load-user-funcs)
+  ;; Puis charger les commandes personnalisées
   (load-commands)
   (format t "Bot prêt !~%")
   (loop
@@ -255,6 +341,7 @@
             (setf *command-sources* (make-hash-table :test #'equal))
             (setf *commands* (make-hash-table :test #'equal))
             (connect-bot)
+            (load-user-funcs)
             (load-commands)))
       (error (e)
         (format t "Erreur: ~a~%" e)
@@ -263,6 +350,7 @@
         (setf *command-sources* (make-hash-table :test #'equal))
         (setf *commands* (make-hash-table :test #'equal))
         (connect-bot)
+        (load-user-funcs)
         (load-commands)))))
 
 ;; === Lancement automatique ===
