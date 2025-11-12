@@ -1,4 +1,4 @@
-;;;; Bot IRC SBCL — Version FINALE ULTRA ROBUSTE + Persistance DEFUN (liste/suppression)
+;;;; Bot IRC SBCL — Ultra Robuste + DEFUN persistantes + !funcs/!delfunc + !connect
 ;;;; Fonctionne sur SBCL + Quicklisp
 
 (unless (find-package :ql) (load "/root/quicklisp/setup.lisp"))
@@ -15,10 +15,10 @@
 (in-package :lispbot)
 
 ;;;; === Configuration ===
-(defvar *server* "irc.libera.chat")
+(defvar *server* "labynet.fr")
 (defvar *port* 6667)
 (defvar *nick* "LispBot")
-(defvar *channels* '("#lisp-experimental"))
+(defvar *channels* '("#test"))
 (defvar *socket* nil)
 (defvar *stream* nil)
 (defvar *write-lock* (make-lock "irc-write-lock"))
@@ -32,6 +32,16 @@
 (defvar *commands* (make-hash-table :test #'equal))
 
 (defparameter *current-target* nil)
+(defun wait-welcome ()
+  "Attend le RPL_WELCOME (001) avant de continuer."
+  (loop
+    for line = (read-line *stream* nil nil)
+    do
+      (when (null line)
+        (error "Déconnecté pendant l'enregistrement (avant 001)"))
+      (process-message line)
+      (when (cl-ppcre:scan "^(?:@[^ ]+ )?:\\S+ 001 " line)
+        (return))))
 
 ;;;; === IRC I/O ===
 (defun irc-send-line (fmt &rest args)
@@ -57,11 +67,16 @@
   (setf *socket* (socket-connect *server* *port* :element-type 'character))
   (setf *stream* (socket-stream *socket*))
   (irc-send-line "NICK ~a" *nick*)
-  (irc-send-line "USER ~a 0 * :LispBot ∞" *nick*)
+  (irc-send-line "USER ~a 0 * :LispBot" *nick*)
   (format t "Connecté à ~a:~a~%" *server* *port*)
+  ;; 🔴 ATTENDRE LE 001 AVANT DE PARLER
+  (wait-welcome)
+  ;; Petit délai anti-flood, certains serveurs y sont sensibles
+  (sleep 0.8)
   (dolist (c *channels*)
     (join-channel c)
     (format t "Rejoint ~a~%" c)))
+
 
 ;;;; === Persistance des commandes ===
 (defun save-commands ()
@@ -74,11 +89,10 @@
   (send-msg "Commandes sauvegardées !"))
 
 (defun load-commands ()
-  ;; Réinitialise tables
   (setf *command-sources* (make-hash-table :test #'equal))
   (setf *commands* (make-hash-table :test #'equal))
   (when (probe-file *commands-file*)
-    (let ((*package* (find-package :lispbot)))  ; IMPORTANT: exécuter add-command dans :lispbot
+    (let ((*package* (find-package :lispbot)))
       (load *commands-file* :verbose nil))
     (send-msg (format nil "Chargé ~d commande(s)" (hash-table-count *command-sources*)))))
 
@@ -89,21 +103,19 @@
   (labels ((collect-defuns (f acc)
              (cond
                ((and (consp f) (eq (first f) 'defun)) (cons f acc))
-               ((consp f) (collect-defuns (rest f) (collect-defuns (first f) acc)))
-               (t acc)))
-           (defun-name (d) (second d)))
-    (let* ((defs (nreverse (collect-defuns form '()))))
+               ((consp f) (collect-defuns (rest f)
+                                          (collect-defuns (first f) acc)))
+               (t acc))))
+    (let ((defs (nreverse (collect-defuns form '()))))
       (when defs
         (with-lock-held (*persist-lock*)
-          ;; lire les noms déjà présents
           (let ((seen (make-hash-table :test #'equal)))
             (when (probe-file *user-funcs-file*)
               (with-open-file (in *user-funcs-file* :direction :input)
-                (loop for f = (read in nil :eof)
-                      until (eq f :eof)
-                      when (and (consp f) (eq (first f) 'defun))
-                      do (setf (gethash (string-downcase (symbol-name (second f))) seen) t))))
-            ;; ajouter uniquement les nouveaux
+                (loop for ff = (read in nil :eof)
+                      until (eq ff :eof)
+                      when (and (consp ff) (eq (first ff) 'defun))
+                      do (setf (gethash (string-downcase (symbol-name (second ff))) seen) t))))
             (with-open-file (out *user-funcs-file*
                                  :direction :output
                                  :if-exists :append
@@ -114,19 +126,16 @@
                     (format out "~s~%" d)
                     (setf (gethash nm seen) t)))))))))))
 
- 
 (defun list-user-funcs ()
   "Retourne la liste des fonctions persistées (symboles dans le package :lispbot)."
   (when (probe-file *user-funcs-file*)
-    (let ((*package* (find-package :lispbot)))   ; <<< clé : lire dans :lispbot, même en thread
+    (let ((*package* (find-package :lispbot)))
       (with-open-file (in *user-funcs-file* :direction :input)
         (loop for f = (read in nil :eof)
               until (eq f :eof)
               when (and (consp f) (eq (first f) 'defun))
               collect (second f))))))
 
-
-;; Remplace delete-user-func par ceci
 (defun delete-user-func (name)
   "Supprime une fonction du fichier et de la mémoire."
   (let* ((target-up (string-upcase (string-trim '(#\Space #\Tab #\Return #\Linefeed) name)))
@@ -135,29 +144,28 @@
     (if (not (some (lambda (s) (string-equal (symbol-name s) target-up)) fns))
         (send-msg (format nil "Aucune fonction nommée ~a." name))
         (progn
-          ;; Réécrire le fichier sans la defun ciblée, en LISPbot pour être cohérent
           (with-lock-held (*persist-lock*)
             (let ((*package* (find-package :lispbot)))
               (let ((tmp (make-string-output-stream)))
                 (with-open-file (in *user-funcs-file* :direction :input)
                   (loop for f = (read in nil :eof)
                         until (eq f :eof)
-                        unless (and (consp f) (eq (first f) 'defun)
+                        unless (and (consp f)
+                                    (eq (first f) 'defun)
                                     (string-equal (symbol-name (second f)) target-up))
                         do (format tmp "~s~%" f)))
-                (with-open-file (out *user-funcs-file*
-                                     :direction :output :if-exists :supersede)
+                (with-open-file (out *user-funcs-file* :direction :output :if-exists :supersede)
                   (princ (get-output-stream-string tmp) out)))))
-          ;; Dé-lier la fonction en mémoire
           (ignore-errors (fmakunbound sym))
           (send-msg (format nil "Fonction ~a supprimée." name))))))
-
 
 (defun load-user-funcs ()
   (when (probe-file *user-funcs-file*)
     (let ((*package* (find-package :lispbot)))
       (load *user-funcs-file* :verbose nil)
-      (send-msg (format nil "Fonctions utilisateur chargées depuis ~a" *user-funcs-file*)))))
+      ;; (send-msg (format nil "Fonctions utilisateur chargées depuis ~a" *user-funcs-file*))
+      )))
+
 
 ;;;; === Sécurité & Éval ===
 (defun unsafe-form-p (form)
@@ -195,9 +203,7 @@
         (when (and danger (not is-admin))
           (send-msg-to dest "Forme interdite pour votre niveau d'utilisateur (I/O ou exécution détectée).")
           (return-from safe-eval :forbidden))
-        ;; Persister toutes les DEFUN détectées (anti-doublon intégré)
         (persist-defuns-in-form form)
-        ;; Évaluation
         (let ((result (eval form)))
           (cond
             ((stringp result) (send-msg-to dest result))
@@ -213,7 +219,6 @@
 
 (defun add-command (name code-str)
   (let* ((clean-name (%normalize-name name))
-         ;; compile une fn fermée qui utilise send-msg dynamiquement
          (fn (compile nil `(lambda () (send-msg ,code-str)))))
     (setf (gethash clean-name *commands*) fn)
     (setf (gethash clean-name *command-sources*) code-str)
@@ -226,24 +231,66 @@
       (funcall fn)
       t)))
 
+;;;; === Instance éphémère multi-serveur (pour !connect) ===
+(defun %random-nick (base)
+  (format nil "~a~3,'0d" base (random 1000)))
+
+(defun start-ephemeral-bot (srv chan &key (port 6667) (nick-base *nick*))
+  "Démarre une instance indépendante connectée à SRV et rejoignant CHAN."
+  (let ((*server* srv)
+        (*port* port)
+        (*nick* (%random-nick nick-base))
+        (*channels* (list chan))
+        (*socket* nil)
+        (*stream* nil)
+        (*current-target* nil)
+        (*command-sources* (make-hash-table :test #'equal))
+        (*commands* (make-hash-table :test #'equal)))
+    (format t "[~a:~a] instance éphémère — nick=~a chan=~a~%" *server* *port* *nick* chan)
+    (labels ((run ()
+               (connect-bot)
+               (load-user-funcs)
+               (load-commands)
+               (send-msg-to chan (format nil "Connecté à ~a dans ~a (nick ~a) !" srv chan *nick*))
+               (loop
+                 (handler-case
+                     (let ((line (read-line *stream* nil nil)))
+                       (when line (process-message line))
+                       (unless line
+                         (format t "[~a] Déconnexion. Reconnexion...~%" srv)
+                         (sleep 5)
+                         (when *socket* (ignore-errors (close *socket*)))
+                         (setf *command-sources* (make-hash-table :test #'equal))
+                         (setf *commands* (make-hash-table :test #'equal))
+                         (connect-bot)
+                         (load-user-funcs)
+                         (load-commands)))
+                   (error (e)
+                     (format t "[~a] Erreur: ~a — retry sous 5s~%" srv e)
+                     (sleep 5)
+                     (when *socket* (ignore-errors (close *socket*)))
+                     (setf *command-sources* (make-hash-table :test #'equal))
+                     (setf *commands* (make-hash-table :test #'equal))
+                     (connect-bot)
+                     (load-user-funcs)
+                     (load-commands))))))
+      (run))))
+
 ;;;; === Gestion des commandes (ULTRA ROBUSTE) ===
 (defun handle-command (sender dest text)
-  ;; Normalise la ligne
   (let* ((*current-target* dest)
          (txt (string-trim '(#\Space #\Tab #\Return #\Linefeed) text)))
     (cond
-      ;; Bonjour
       ((scan "^!hello\\b" txt)
        (send-msg (format nil "Salut ~a ! Lisp est vivant." sender)))
-((string= txt "!help")
- (send-msg
-  "Commandes: !hello !eval !addcmd !save !load !fork !cmds !funcs !delfunc !help — Ex: !eval (date)."))
 
-      ;; Évaluation safe
+      ((string= txt "!help")
+       (send-msg
+        "Commandes: !hello !eval !addcmd !save !load !fork !cmds !funcs !delfunc !help — Ex: !eval (date)."))
+
       ((scan "^!eval (.+)" txt)
        (safe-eval (subseq txt (length "!eval ")) sender dest))
 
-      ;; Ajout de commande : guillemets optionnels, pas de " fantôme
       ((and (member sender *admin-users* :test #'string=)
             (scan "^!addcmd\\s+!([^\\s]+)\\s+(?:\"([^\"]*)\"|(.*))\\s*$" txt))
        (multiple-value-bind (_ regs)
@@ -253,6 +300,8 @@
                 (raw3 (aref regs 2))
                 (msg (string-trim '(#\Space #\Tab #\Return #\Linefeed)
                                   (or raw2 raw3 ""))))
+                                   (privmsg (if (char= (char target 0) #\#) target sender)
+              (format nil "[ECHO ~a] ~a" sender text))
            (if (and (plusp (length cmd-name)) (plusp (length msg)))
                (progn
                  (add-command cmd-name msg)
@@ -260,13 +309,12 @@
                  (save-commands))
                (send-msg "Erreur : nom ou message vide.")))))
 
-      ;; Save/Load commandes
       ((and (member sender *admin-users* :test #'string=) (string= txt "!save"))
        (save-commands))
+
       ((and (member sender *admin-users* :test #'string=) (string= txt "!load"))
        (load-commands))
 
-      ;; Fork robuste (split sans regexp)
       ((and (member sender *admin-users* :test #'string=)
             (scan "^!fork\\b" txt))
        (let* ((parts (ppcre:split "\\s+" txt))
@@ -282,7 +330,13 @@
                (send-msg-to chan (format nil "Je suis dans ~a !" chan)))
              (send-msg "Usage: !fork #canal"))))
 
-      ;; Liste/Suppression des fonctions persistées
+      ((string= txt "!cmds")
+       (let ((cmds (loop for k being the hash-keys of *command-sources* collect k)))
+         (send-msg
+          (if cmds
+              (format nil "Commandes (~d): ~{~a~^, ~}" (length cmds) (sort cmds #'string<))
+              "Aucune commande personnalisée."))))
+
       ((string= txt "!funcs")
        (let ((fns (list-user-funcs)))
          (if fns
@@ -294,13 +348,22 @@
            (scan-to-strings "^!delfunc\\s+(.+)" txt)
          (delete-user-func (aref regs 0))))
 
-      ;; Appel générique: !<nom>
+      ((and (member sender *admin-users* :test #'string=)
+            (scan "^!connect\\s+([^\\s]+)\\s+(#\\S+)\\s*$" txt))
+       (multiple-value-bind (_ regs)
+           (scan-to-strings "^!connect\\s+([^\\s]+)\\s+(#\\S+)\\s*$" txt)
+         (let ((srv  (aref regs 0))
+               (chan (aref regs 1)))
+           (make-thread
+            (lambda ()
+              (start-ephemeral-bot srv chan :port 6667 :nick-base *nick*))
+            :name (format nil "conn-~a" srv))
+           (send-msg (format nil "Connexion lancée vers ~a (~a)..." srv chan)))))
+
       ((scan "^!([A-Za-z0-9_-]+)\\s*$" txt)
        (let* ((cmd-name-raw (subseq txt 1))
               (cmd-name (%normalize-name cmd-name-raw)))
-         ;; 1) on tente la table de fonctions
          (or (call-command cmd-name)
-             ;; 2) fallback : si on a la source, on envoie directement
              (let ((src (gethash cmd-name *command-sources*)))
                (if src
                    (progn (send-msg src) t)
@@ -313,24 +376,46 @@
   (format t "RECV: ~a~%" line)
   (let ((ln (string-trim '(#\Return #\Linefeed) line)))
     (cond
-      ((scan "^PING :(.*)" ln)
-       (irc-send-line "PONG :~a" (regex-replace "^PING :(.*)" ln "\\1")))
-      ((scan "^:([^!]+)![^ ]+ PRIVMSG ([^ ]+) :(.*)" ln)
+      ;; PING — compatible tags/prefix, ':' optionnel
+      ((scan "^(?:@[^ ]+ )?(?::[^ ]+ )?PING ?:?(.*)$" ln)
+       (let ((token (regex-replace "^(?:@[^ ]+ )?(?::[^ ]+ )?PING ?:?(.*)$" ln "\\1")))
+         (irc-send-line "PONG ~a" (if (plusp (length token))
+                                      (concatenate 'string ":" token)
+                                      ""))))
+
+      ;; NUMÉRIQUES (404, 482, etc.) — debug
+      ((scan "^(?:@[^ ]+ )?:[^ ]+ ([0-9]{3}) (.*)" ln)
        (multiple-value-bind (_ regs)
-           (scan-to-strings "^:([^!]+)![^ ]+ PRIVMSG ([^ ]+) :(.*)" ln)
-         (let ((sender (aref regs 0)) (target (aref regs 1)) (text (aref regs 2)))
-           (make-thread
-            (lambda ()
-              (handle-command sender (if (char= (char target 0) #\#) target sender) text))
-            :name "worker")))))))
+           (scan-to-strings "^(?:@[^ ]+ )?:[^ ]+ ([0-9]{3}) (.*)" ln)
+         (declare (ignore _))
+         (format t "NUMERIC ~a: ~a~%" (aref regs 0) (aref regs 1))))
+
+      ;; PRIVMSG — accepte tags IRCv3
+      ((scan "^(?:@[^ ]+ )?:([^!]+)![^ ]+ PRIVMSG ([^ ]+) :(.*)" ln)
+       (multiple-value-bind (_ regs)
+           (scan-to-strings "^(?:@[^ ]+ )?:([^!]+)![^ ]+ PRIVMSG ([^ ]+) :(.*)" ln)
+         (declare (ignore _))
+         (let ((sender (aref regs 0))
+               (target (aref regs 1))
+               (text   (aref regs 2)))
+ 
+           ;; ⚠️ appel direct (temporaire) pour éviter tout souci de threads
+           (handle-command sender
+                           (if (and (> (length target) 0) (char= (char target 0) #\#))
+                               target
+                               sender)
+                           text))))
+
+      (t
+       ;; autres : ignorer
+       nil))))
+
 
 ;;;; === Démarrage ===
 (defun start-bot ()
   (format t "Démarrage du bot...~%")
   (connect-bot)
-  ;; Charger d'abord les fonctions utilisateur persistées
   (load-user-funcs)
-  ;; Puis charger les commandes personnalisées
   (load-commands)
   (format t "Bot prêt !~%")
   (loop
