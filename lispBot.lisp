@@ -47,6 +47,12 @@
     (write-char #\Return *stream*)
     (write-char #\Linefeed *stream*)
     (force-output *stream*)))
+(defun send-multiline (text)
+  "Envoie TEXT ligne par ligne sur IRC."
+  (dolist (line (ppcre:split "\\r?\\n" text))
+    (when (> (length line) 0)
+      (send-msg line)))
+  text)
 
 (defun join-channel (chan)
   (irc-send-line "JOIN ~a" chan))
@@ -223,6 +229,42 @@
                   (princ (get-output-stream-string tmp) out)))))
           (ignore-errors (fmakunbound sym))
           (send-msg (format nil "Fonction ~a supprimée." name))))))
+(defun show-command-source (name)
+  "Affiche le contenu de la commande personnalisée !name."
+  (let* ((clean (%normalize-name name))
+         (src   (gethash clean *command-sources*)))
+    (if src
+        (send-msg
+         (format nil "Commande !~a : ~a" clean src))
+        (send-msg
+         (format nil "Aucune commande nommée !~a." name)))))
+
+(defun show-user-func-source (name)
+  "Affiche le defun complet correspondant à NAME dans le fichier user-funcs."
+  (let* ((target-up (string-upcase
+                     (string-trim '(#\Space #\Tab #\Return #\Linefeed) name)))
+         (found-form nil))
+    (if (not (probe-file *user-funcs-file*))
+        (send-msg "Aucune fonction sauvegardée.")
+        (let ((*package* (find-package :lispbot)))
+          (with-open-file (in *user-funcs-file* :direction :input)
+            (loop for f = (read in nil :eof)
+                  until (eq f :eof)
+                  when (and (consp f)
+                            (eq (first f) 'defun)
+                            (string-equal (symbol-name (second f)) target-up))
+                  do (setf found-form f)
+                     (return)))))
+    (if found-form
+        (send-multiline
+         (with-output-to-string (s)
+           ;; 👉 On force ici l'impression dans le package :LISPBOT
+           (let ((*package* (find-package :lispbot)))
+             (pprint found-form s))))
+        (send-msg
+         (format nil "Aucune fonction nommée ~a." name)))))
+
+
 
 (defun load-user-funcs ()
   (when (probe-file *user-funcs-file*)
@@ -313,6 +355,28 @@
     (setf (gethash clean-name *commands*) fn)
     (setf (gethash clean-name *command-sources*) code-str)))
 
+(defun delete-command (name)
+  (let* ((clean (%normalize-name name)))
+    (if (not (gethash clean *command-sources*))
+        (send-msg (format nil "Aucune commande nommée !~a." name))
+        (progn
+          ;; Supprimer en mémoire
+          (remhash clean *commands*)
+          (remhash clean *command-sources*)
+
+          ;; Réécrire le fichier commands.lisp
+          (with-open-file (out *commands-file*
+                               :direction :output
+                               :if-exists :supersede)
+            (format out ";;; Commandes du bot — généré automatiquement~%")
+            (format out "(in-package :lispbot)~%~%")
+            (maphash (lambda (n c)
+                       (format out "(add-command ~s ~s)~%" n c))
+                     *command-sources*))
+
+          (send-msg (format nil "Commande !~a supprimée." name))))))
+
+
 (defun call-command (name)
   (let* ((clean (%normalize-name name))
          (fn    (gethash clean *commands*)))
@@ -382,7 +446,7 @@
 
       ((string= txt "!help")
        (send-msg
-        "Commandes: !hello !eval !uptime !addcmd !save !load !fork !cmds !funcs !delfunc !connect !help"))
+        "Commandes: !hello !eval !uptime !addcmd !save !load !fork !cmds !funcs !delfunc !listfunc !listcmd !connect !help"))
 
       ((string= txt "!uptime")
        ;; si tu as défini (defun pu () ...) via !eval, on peut s'en servir
@@ -460,6 +524,13 @@
            (scan-to-strings "^!delfunc\\s+(.+)" txt)
          (declare (ignore _))
          (delete-user-func (aref regs 0))))
+      ;; !delcmd nom
+      ((and (member sender *admin-users* :test #'string=)
+            (scan "^!delcmd\\s+!?(\\S+)" txt))
+       (multiple-value-bind (_ regs)
+           (scan-to-strings "^!delcmd\\s+!?(\\S+)" txt)
+         (declare (ignore _))
+         (delete-command (aref regs 0))))
 
       ;; !connect srv #chan : lance une instance éphémère dans un thread
       ((and (member sender *admin-users* :test #'string=)
@@ -474,6 +545,17 @@
               (start-ephemeral-bot srv chan :port 6667 :nick-base *nick*))
             :name (format nil "conn-~a" srv))
            (send-msg (format nil "Connexion lancée vers ~a (~a)..." srv chan)))))
+       ((scan "^!listcmd\\s+!?(\\S+)" txt)
+        (multiple-value-bind (_ regs)
+            (scan-to-strings "^!listcmd\\s+!?(\\S+)" txt)
+          (declare (ignore _))
+          (show-command-source (aref regs 0))))
+
+       ((scan "^!listfunc\\s+(.+)" txt)
+        (multiple-value-bind (_ regs)
+            (scan-to-strings "^!listfunc\\s+(.+)" txt)
+          (declare (ignore _))
+          (show-user-func-source (aref regs 0))))
 
       ;; appel de commande custom !xxx
       ((scan "^!([A-Za-z0-9_-]+)\\s*$" txt)
