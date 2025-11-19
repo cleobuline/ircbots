@@ -468,24 +468,27 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
  
     def _generate_video_worker(self, connection, channel, prompt):
         api_key = self.api_key
-        headers_json = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
 
         try:
-            # Étape 1 : création du job vidéo
-            payload = {
-                "model": "sora-2",
-                "prompt": prompt.strip(),
-                # optionnel :
-                 "seconds": "10",
-                 "size": "1280x720",
+            # Étape 1 : création du job vidéo (multipart/form-data)
+            # >>> IMPORTANT : NE PAS mettre Content-Type: application/json
+            headers = {
+                "Authorization": f"Bearer {api_key}",
             }
+
+            # `files` permet d'envoyer du multipart/form-data avec requests
+            files = {
+                "model": (None, "sora-2"),
+                "prompt": (None, prompt.strip()),
+                # optionnels, à adapter selon la doc / ce que tu veux :
+                "seconds": (None, "12"),        # durée en secondes
+                #"size": (None, "1280x720"),     # résolution
+            }
+
             r = requests.post(
                 "https://api.openai.com/v1/videos",
-                headers=headers_json,
-                json=payload,
+                headers=headers,
+                files=files,
                 timeout=60,
             )
             r.raise_for_status()
@@ -514,10 +517,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 status = v.get("status", "").lower()
                 progress = v.get("progress", None)
 
-                if status in ["queued", "in_progress"]:
-                    if progress is not None:
-                        self.safe_privmsg(connection, channel, f"{progress}% – en cours…")
-                    continue
+                #if status in ["queued", "in_progress"]:
+                    #if progress is not None:
+                        #self.safe_privmsg(connection, channel, f"{progress}% – en cours…")
+                    #continue
 
                 if status == "failed":
                     error_msg = (v.get("error") or {}).get("message", "Erreur inconnue")
@@ -534,7 +537,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         resp_video = requests.get(
                             f"https://api.openai.com/v1/videos/{video_id}/content",
                             headers={"Authorization": f"Bearer {api_key}"},
-                            params={"variant": "video"},
+                            params={"variant": "video"},  # ou autre variant si tu en utilises
                             timeout=300,
                             stream=True,
                         )
@@ -543,7 +546,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         self.safe_privmsg(connection, channel, f"✖ Erreur download Sora-2 : {e}")
                         return
 
-                    # ADAPTE ICI : chemin réel servi par Apache/Nginx
                     local_dir = "/var/www/html/sora"
                     os.makedirs(local_dir, exist_ok=True)
                     filename = f"{video_id}.mp4"
@@ -554,10 +556,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                             if chunk:
                                 f.write(chunk)
 
-                    # ADAPTE ICI : ton domaine/URL publique
                     public_url = f"https://new.labynet.fr/sora/{filename}"
 
-                    # Raccourcisseur optionnel
                     try:
                         shortener = pyshorteners.Shortener()
                         public_url_short = shortener.tinyurl.short(public_url)
@@ -567,7 +567,6 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                     self.safe_privmsg(connection, channel, f"✔ Vidéo Sora-2 prête ! → {public_url_short}")
                     return
 
-            # Timeout final
             self.safe_privmsg(connection, channel, "⏰ Timeout 15 min – Sora-2 trop lent ou bloqué")
 
         except Exception as e:
