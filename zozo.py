@@ -119,6 +119,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 
             elif command == "video":
                 self.generate_video_sora(connection, channel, args)
+                
+
             elif command == "url":
                 self.summarize_url(connection, channel, args)
 
