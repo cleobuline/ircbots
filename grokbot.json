@@ -1,0 +1,9 @@
+{
+    "server": "labynet.fr",
+    "port": 6667,
+    "channel": "#labynet",
+    "nickname": "GrokBot",
+    "grok_api_key": "xai-your key",
+    "stability_api_key": "sk-obsolète",
+    "max_context_lines": 10
+}
