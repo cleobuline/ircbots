@@ -1,22 +1,110 @@
 import irc.bot
 import openai
 import json
+import logging
 import os
+import re
+import sys
+import socket
+import tempfile
 import requests
 import pyshorteners
 import imgbbpy
 import time
 import threading
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 from pylatexenc.latex2text import LatexNodes2Text
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
+IRC_SYSTEM_PROMPT = (
+    "Tu es un assistant IA sur un serveur IRC. "
+    "Réponds de manière concise et sans formatage Markdown "
+    "(pas de **, pas de #, pas de listes à tirets) "
+    "car le texte s'affiche en clair sur IRC."
+)
+
+# Modèles OpenAI valides
+VALID_MODELS = [
+    "gpt-3.5-turbo", "gpt-4",
+    "o1-mini", "o1-preview", "o1", "o3-mini",
+    "gpt-4o", "gpt-4.5-preview", "gpt-4o-2024-08-06",
+    "gpt-4o-mini",
+]
+
+# Plages IP privées/réservées à bloquer pour la protection SSRF
+_BLOCKED_IP_PREFIXES = (
+    "127.", "10.", "0.",
+    "169.254.",          # link-local
+    "192.168.",
+    "172.16.", "172.17.", "172.18.", "172.19.",
+    "172.20.", "172.21.", "172.22.", "172.23.",
+    "172.24.", "172.25.", "172.26.", "172.27.",
+    "172.28.", "172.29.", "172.30.", "172.31.",
+    "::1", "fc", "fd",   # IPv6 loopback / ULA
+)
+
+
+def sanitize_title(title: str) -> str:
+    """Nettoie le titre pour n'autoriser que les caractères sûrs (path traversal)."""
+    return re.sub(r'[^\w\-]', '_', title)[:64]
+
+
+def sanitize_nick(nick: str) -> str:
+    """Nettoie un nick IRC pour usage dans les noms de fichiers."""
+    return re.sub(r'[^\w\-]', '_', nick)[:32]
+
+
+def validate_public_url(url: str) -> str:
+    """
+    Valide et normalise une URL.
+    - Ajoute le schéma si absent.
+    - Refuse les adresses privées/locales (protection SSRF).
+    - Résout le DNS et vérifie l'IP résolue (protection contre le DNS rebinding).
+    Retourne l'URL normalisée ou lève ValueError.
+    """
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Schéma non autorisé : {parsed.scheme}")
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise ValueError("URL sans hôte.")
+
+    # Refus des noms d'hôtes locaux évidents
+    if hostname in ("localhost", "::1") or hostname.endswith(".local"):
+        raise ValueError(f"Hôte local non autorisé : {hostname}")
+
+    # Résolution DNS et vérification de l'IP résolue (anti DNS rebinding)
+    try:
+        results = socket.getaddrinfo(hostname, None)
+        if not results:
+            raise ValueError(f"Impossible de résoudre l'hôte : {hostname}")
+        for result in results:
+            resolved_ip = result[4][0]
+            for prefix in _BLOCKED_IP_PREFIXES:
+                if resolved_ip.startswith(prefix):
+                    raise ValueError(f"IP résolue privée/réservée non autorisée : {resolved_ip}")
+    except socket.gaierror as e:
+        raise ValueError(f"Impossible de résoudre l'hôte '{hostname}' : {e}")
+
+    return url
 
 
 class ChatGPTBot(irc.bot.SingleServerIRCBot):
     def __init__(self, config_file):
-        # Charger la configuration
         with open(config_file, "r") as f:
             config = json.load(f)
 
-        # Initialiser les variables
         self.channel_list = [channel.strip() for channel in config["channels"].split(",")]
         self.nickname = config["nickname"]
         self.server = config["server"]
@@ -26,19 +114,28 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self.imgbb_api_key = config["imgbb_api_key"]
         self.web_url = config["display_url"]
         self.image_filename = config["image_filename"]
-        self.admin_user = config["admin_user"]
+        self.admin_user = config.get("admin_user", "")
         self.grok_api_key = config["grok_api_key"]
 
+        # FIX: verrou pour protéger blocked_users des accès concurrents
+        self._blocked_users_lock = threading.Lock()
         self.blocked_users = set()
-        self.user_contexts = []  # List to store context information
+
+        # Rate limiting : délai minimum entre deux appels API par utilisateur (en secondes)
+        self.RATE_LIMIT_SECONDS = 5
+        self._user_last_call = {}          # nick -> timestamp dernier appel
+        self._rate_limit_lock = threading.Lock()
+        self.user_contexts = {}  # Dict (channel, user) -> liste de {"role": ..., "content": ...}
+        # Verrou pour protéger user_contexts des accès concurrents (thread Sora)
+        self._context_lock = threading.Lock()
         self.model = "gpt-4o-mini"
         self.tag = ""
 
-        openai.api_key = self.api_key
+        # Client OpenAI v1+
+        self.openai_client = openai.OpenAI(api_key=self.api_key)
         self.imgbb_client = imgbbpy.SyncClient(self.imgbb_api_key)
 
-        if not os.path.exists("conversations"):
-            os.makedirs("conversations")
+        os.makedirs("conversations", exist_ok=True)
 
         irc.bot.SingleServerIRCBot.__init__(self, [(self.server, self.port)], self.nickname, self.nickname)
 
@@ -52,22 +149,44 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         channel = event.target
         bot_nickname = self.connection.get_nickname()
 
-        # Commande Grok
-        if message.startswith("grok"):
+        # Vérification blocage en tête — s'applique à toutes les commandes
+        with self._blocked_users_lock:
+            if user in self.blocked_users:
+                return
+
+        # Rate limiting — l'admin est exempté
+        if user != self.admin_user:
+            now = time.time()
+            with self._rate_limit_lock:
+                last = self._user_last_call.get(user, 0)
+                if now - last < self.RATE_LIMIT_SECONDS:
+                    connection.privmsg(channel, f"{user}: doucement, attends {self.RATE_LIMIT_SECONDS}s entre chaque commande.")
+                    return
+                self._user_last_call[user] = now
+
+        # Commande grok réservée à l'admin pour éviter l'abus
+        if message.startswith("grok") and user == self.admin_user:
             prompt = message.split("grok", 1)[1].strip()
+            if not prompt:
+                return
             self.update_context(channel, user, prompt)
-            response = self.generate_response_grok(channel, user, prompt)
+            response = self.generate_response_grok(channel, user)
             if response and response.strip():
                 self.send_message_in_chunks(connection, channel, response)
+            return
 
         # Appel direct au bot, style "Zozo: ..."
-        elif message.strip().startswith(bot_nickname + ":"):
+        if message.strip().startswith(bot_nickname + ":"):
             message = message[len(bot_nickname) + 1:].strip()
             command, args = self.parse_command(message)
 
             if command == "tag":
-                self.tag = args  # Mettre à jour le tag
-                connection.privmsg(channel, f"Tag mis à jour: {self.tag}")
+                # tag limité à l'admin (comportement global du bot)
+                if user == self.admin_user:
+                    self.tag = args
+                    connection.privmsg(channel, f"Tag mis à jour: {self.tag}")
+                else:
+                    connection.privmsg(channel, "Commande réservée à l'admin.")
 
             elif command == "help":
                 self.send_help_message(connection, channel)
@@ -97,7 +216,11 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 connection.privmsg(channel, f"Utilisateur {args} débloqué.")
 
             elif command == "model":
-                self.change_model(channel, user, args)
+                # FIX: changement de modèle réservé à l'admin (coût API)
+                if user == self.admin_user:
+                    self.change_model(channel, args)
+                else:
+                    connection.privmsg(channel, "Commande réservée à l'admin.")
 
             elif command == "list-models":
                 self.list_models(channel)
@@ -115,23 +238,23 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 self.generate_image_imgbb(connection, channel, args)
 
             elif command == "vision":
-                self.generate_image_description(connection, channel, args)
-                
+                self.generate_image_description(connection, channel, user, args)
+
             elif command == "video":
                 self.generate_video_sora(connection, channel, args)
-                
 
             elif command == "url":
                 self.summarize_url(connection, channel, args)
 
             else:
-                if user in self.blocked_users:
-                    connection.privmsg(channel, "Vous êtes bloqué et ne pouvez pas recevoir de réponses.")
-                else:
-                    self.update_context(channel, user, message)
-                    response = self.generate_response(channel, user, message)
-                    if response and response.strip():
-                        self.send_message_in_chunks(connection, channel, response)
+                self.update_context(channel, user, message)
+                response = self.generate_response(channel, user)
+                if response and response.strip():
+                    self.send_message_in_chunks(connection, channel, response)
+
+    # ------------------------------------------------------------------ #
+    #  Utilitaires                                                         #
+    # ------------------------------------------------------------------ #
 
     def parse_command(self, message):
         parts = message.strip().split(" ", 1)
@@ -139,390 +262,469 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         args = parts[1] if len(parts) > 1 else ""
         return command, args
 
+    def build_system_prompt(self):
+        prompt = IRC_SYSTEM_PROMPT
+        if self.tag:
+            prompt += f" {self.tag}"
+        return prompt
+
     def send_help_message(self, connection, channel):
         help_message = (
             "'raz' oublie la conversation, 'save [titre]', 'load [titre]', "
             "'delete [titre]', 'files' liste les conversations, 'block [user]' "
             "bloque un utilisateur, 'unblock [user]' débloque un utilisateur, "
-            "'model [model_name]' pour changer le modèle, 'list-models' liste les modèles valides, "
+            "'model [model_name]' pour changer le modèle (admin), 'list-models' liste les modèles valides, "
             "'image [prompt]' pour générer une image, 'vision [image URL]' pour décrire une image, "
-            "'url [URL]' pour décrire une page web."
+            "'url [URL]' pour résumer une page web."
         )
         connection.privmsg(channel, help_message)
 
-    def update_context(self, channel, user, message):
-        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
+    def safe_privmsg(self, connection, target, message):
+        try:
+            connection.privmsg(target, message)
+        except Exception as e:
+            logger.warning(f"safe_privmsg failed → {e}")
 
-        if context_entry:
-            context = context_entry[2]
-            context.append(message + ".")
+    def send_message_in_chunks(self, connection, target, message):
+        if not message:
+            return
 
-            if len(context) > self.max_num_line:
-                context = context[-self.max_num_line:]
-            context_entry[2] = context
+        MAX_BYTES = 392
+        lines = message.split('\n')
+        total_chunks_sent = 0
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            while line:
+                encoded = line.encode('utf-8')
+                if len(encoded) <= MAX_BYTES:
+                    connection.privmsg(target, line)
+                    total_chunks_sent += 1
+                    line = ''
+                else:
+                    # Trouver la coupure sûre en bytes sans couper un caractère UTF-8
+                    cut = MAX_BYTES
+                    while cut > 0 and (encoded[cut] & 0xC0) == 0x80:
+                        cut -= 1
+
+                    chunk_str = encoded[:cut].decode('utf-8')
+
+                    # Essayer de couper sur un espace
+                    last_space = chunk_str.rfind(' ')
+                    if last_space > 0:
+                        connection.privmsg(target, chunk_str[:last_space].strip())
+                        line = chunk_str[last_space:].strip() + line[len(chunk_str):]
+                    else:
+                        connection.privmsg(target, chunk_str.strip())
+                        line = line[len(chunk_str):]
+
+                    total_chunks_sent += 1
+
+                # FIX: sleep après chaque envoi sauf le premier message unique (anti-flood)
+                if total_chunks_sent > 1 or len(lines) > 1:
+                    time.sleep(0.5)
+
+    # ------------------------------------------------------------------ #
+    #  Contexte                                                            #
+    # ------------------------------------------------------------------ #
+
+    def update_context(self, channel, user, message, role="user"):
+        key = (channel, user)
+        with self._context_lock:
+            if key not in self.user_contexts:
+                self.user_contexts[key] = []
+
+            self.user_contexts[key].append({"role": role, "content": message})
+
+            messages = self.user_contexts[key]
+            if len(messages) > self.max_num_line:
+                messages = messages[-self.max_num_line:]
+                while messages and messages[0]["role"] != "user":
+                    messages = messages[1:]
+            self.user_contexts[key] = messages
+
+    def reset_user_context(self, channel, user):
+        with self._context_lock:
+            self.user_contexts[(channel, user)] = []
+
+    def save_user_context(self, channel, user, title):
+        title = sanitize_title(title)
+        safe_user = sanitize_nick(user)
+        if not title:
+            self.connection.privmsg(channel, "Titre invalide.")
+            return
+        key = (channel, user)
+        with self._context_lock:
+            messages = self.user_contexts.get(key)
+        if messages:
+            filename = os.path.join("conversations", f"{safe_user}.{title}.context.json")
+            with open(filename, "w") as f:
+                json.dump(messages, f)
+            self.connection.privmsg(channel, f"Contexte de {user} sauvegardé sous '{title}'.")
         else:
-            self.user_contexts.append([channel, user, [message + "."]])
+            self.connection.privmsg(channel, f"Aucun contexte à sauvegarder pour {user}.")
 
-    def generate_response(self, channel, user, message):
-        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
+    def load_user_context(self, channel, user, title):
+        title = sanitize_title(title)
+        safe_user = sanitize_nick(user)
+        if not title:
+            self.connection.privmsg(channel, "Titre invalide.")
+            return
+        filename = os.path.join("conversations", f"{safe_user}.{title}.context.json")
+        if os.path.exists(filename):
+            with open(filename, "r") as f:
+                context = json.load(f)
+            # Migration ancien format (liste de strings) → nouveau format (liste de dicts)
+            if context and isinstance(context[0], str):
+                context = [{"role": "user", "content": msg.rstrip(".")} for msg in context]
+            with self._context_lock:
+                self.user_contexts[(channel, user)] = context
+            self.connection.privmsg(channel, f"Contexte '{title}' chargé pour {user}.")
+        else:
+            self.connection.privmsg(channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre '{title}'.")
 
-        if not context_entry:
-            return ""
-
-        context = "\n".join(context_entry[2][:-1])
-        last_message = context_entry[2][-1]
-        prompt_text = (
-            f"Contexte:\n{context}\n\n"
-            f"Répond seulement à la dernière ligne en tenant compte du contexte précédent.\n"
-            f"Dernière ligne: {last_message}"
+    def list_user_files(self, channel, user):
+        safe_user = sanitize_nick(user)
+        prefix = f"{safe_user}."
+        suffix = ".context.json"
+        files = sorted(
+            fname[len(prefix):-len(suffix)]
+            for fname in os.listdir("conversations")
+            if fname.startswith(prefix) and fname.endswith(suffix)
         )
+        if files:
+            self.connection.privmsg(channel, f"Fichiers de {user} : {', '.join(files)}")
+        else:
+            self.connection.privmsg(channel, f"Aucun fichier de contexte disponible pour {user}.")
+
+    def delete_user_context(self, channel, user, title):
+        title = sanitize_title(title)
+        safe_user = sanitize_nick(user)
+        if not title:
+            self.connection.privmsg(channel, "Titre invalide.")
+            return
+        filename = os.path.join("conversations", f"{safe_user}.{title}.context.json")
+        if os.path.exists(filename):
+            os.remove(filename)
+            self.connection.privmsg(channel, f"Fichier '{title}' supprimé pour {user}.")
+        else:
+            self.connection.privmsg(channel, f"Aucun fichier trouvé pour {user} avec le titre '{title}'.")
+
+    # ------------------------------------------------------------------ #
+    #  Blocage utilisateurs                                                #
+    # ------------------------------------------------------------------ #
+
+    def block_user(self, user):
+        with self._blocked_users_lock:
+            self.blocked_users.add(user)
+
+    def unblock_user(self, user):
+        with self._blocked_users_lock:
+            self.blocked_users.discard(user)
+
+    # ------------------------------------------------------------------ #
+    #  Modèles                                                             #
+    # ------------------------------------------------------------------ #
+
+    def change_model(self, channel, model):
+        if model in VALID_MODELS:
+            self.model = model
+            self.connection.privmsg(channel, f"Modèle changé à {model}.")
+        else:
+            self.connection.privmsg(channel, f"Modèle '{model}' invalide. Modèles valides : {', '.join(VALID_MODELS)}.")
+
+    def list_models(self, channel):
+        self.connection.privmsg(channel, f"Modèles valides : {', '.join(VALID_MODELS)}.")
+
+    # ------------------------------------------------------------------ #
+    #  Génération de texte (OpenAI v1+)                                   #
+    # ------------------------------------------------------------------ #
+
+    def generate_response(self, channel, user):
+        key = (channel, user)
+        with self._context_lock:
+            messages = list(self.user_contexts.get(key, []))
+        if not messages:
+            return ""
 
         try:
-            response = openai.ChatCompletion.create(
+            response = self.openai_client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt_text}]
+                # FIX: max_tokens pour éviter des réponses longues et coûteuses
+                max_tokens=500,
+                messages=[{"role": "system", "content": self.build_system_prompt()}] + messages
             )
             generated_text = response.choices[0].message.content.strip()
-            # Appliquer un éventuel tag si tu veux le réactiver :
-            # if self.tag:
-            #     generated_text = f"{self.tag} {generated_text}"
             readable_text = LatexNodes2Text().latex_to_text(generated_text)
+            self.update_context(channel, user, generated_text, role="assistant")
             return readable_text
-        except openai.error.OpenAIError as e:
+        except openai.OpenAIError as e:
+            logger.error(f"OpenAI error: {e}")
             return f"[Erreur OpenAI: {e}]"
         except Exception as e:
+            logger.error(f"Unexpected error in generate_response: {e}")
             return f"[Erreur inattendue: {e}]"
 
-    def generate_response_grok(self, channel, user, message):
-        api_key = self.grok_api_key
-        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
-        headers = {'Authorization': f'Bearer {api_key}'}
-
-        if not context_entry:
+    def generate_response_grok(self, channel, user):
+        key = (channel, user)
+        with self._context_lock:
+            messages = list(self.user_contexts.get(key, []))
+        if not messages:
             return ""
 
-        context = "\n".join(context_entry[2][:-1])
-        last_message = context_entry[2][-1]
-
-        prompt_text = (
-            f"Contexte:\n{context}\n\n"
-            f"Répond seulement à la dernière ligne en tenant compte du contexte précédent.\n"
-            f"Dernière ligne: {last_message}"
-        )
-
-        data = {
+        headers = {'Authorization': f'Bearer {self.grok_api_key}'}
+        payload = {
             "model": "grok-3",
-            "messages": [{"role": "user", "content": prompt_text}],
+            "messages": [{"role": "system", "content": self.build_system_prompt()}] + messages,
             "max_tokens": 500,
             "temperature": 0.7
         }
 
         try:
-            response = requests.post('https://api.x.ai/v1/chat/completions', json=data, headers=headers, timeout=20)
-            data = response.json()
-            if 'choices' in data and data['choices']:
-                generated_text = data['choices'][0]['message']['content']
+            response = requests.post(
+                'https://api.x.ai/v1/chat/completions',
+                json=payload,
+                headers=headers,
+                timeout=60
+            )
+            response.raise_for_status()
+            resp_data = response.json()
+            if 'choices' in resp_data and resp_data['choices']:
+                generated_text = resp_data['choices'][0]['message']['content']
             else:
                 generated_text = "[Grok] Erreur ou réponse non disponible."
             readable_text = LatexNodes2Text().latex_to_text(generated_text)
+            self.update_context(channel, user, generated_text, role="assistant")
             return readable_text
         except requests.exceptions.RequestException as e:
+            logger.error(f"Grok HTTP error: {e}")
             return f"[Erreur Grok (HTTP): {e}]"
         except Exception as e:
+            logger.error(f"Unexpected Grok error: {e}")
             return f"[Erreur Grok inattendue: {e}]"
 
-    def reset_user_context(self, channel, user):
-        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
-        if context_entry:
-            context_entry[2] = ["Bonjour"]
-        else:
-            self.user_contexts.append([channel, user, ["Bonjour"]])
+    # ------------------------------------------------------------------ #
+    #  Vision (OpenAI v1+) — description intégrée au contexte             #
+    # ------------------------------------------------------------------ #
 
-    def save_user_context(self, channel, user, title):
-        context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
-        if context_entry:
-            context = context_entry[2]
-            filename = os.path.join("conversations", f"{user}.{title}.context.json")
-            with open(filename, "w") as file:
-                json.dump(context, file)
-            self.connection.privmsg(channel, f"Contexte utilisateur de {user} sauvegardé sous le titre {title} dans {filename}.")
-        else:
-            self.connection.privmsg(channel, f"Aucun contexte à sauvegarder pour {user}.")
-
-    def load_user_context(self, channel, user, title):
-        filename = os.path.join("conversations", f"{user}.{title}.context.json")
-        if os.path.exists(filename):
-            with open(filename, "r") as file:
-                context = json.load(file)
-            context_entry = next((entry for entry in self.user_contexts if entry[0] == channel and entry[1] == user), None)
-            if context_entry:
-                context_entry[2] = context
-            else:
-                self.user_contexts.append([channel, user, context])
-            self.connection.privmsg(channel, f"Contexte utilisateur de {user} avec le titre {title} chargé depuis {filename}.")
-        else:
-            self.connection.privmsg(channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
-
-    def list_user_files(self, channel, user):
-        prefix = f"{user}."
-        suffix = ".context.json"
-        files = []
-        for filename in os.listdir("conversations"):
-            if filename.startswith(prefix) and filename.endswith(suffix):
-                title = filename[len(prefix):-len(suffix)]
-                files.append(title)
-        files.sort()
-        if files:
-            self.connection.privmsg(channel, f"Fichiers de contexte disponibles pour {user} :")
-            for file in files:
-                self.connection.privmsg(channel, f"- {file}")
-        else:
-            self.connection.privmsg(channel, f"Aucun fichier de contexte disponible pour {user}.")
-
-    def delete_user_context(self, channel, user, title):
-        filename = os.path.join("conversations", f"{user}.{title}.context.json")
-        if os.path.exists(filename):
-            os.remove(filename)
-            self.connection.privmsg(channel, f"Fichier de contexte '{title}' supprimé pour l'utilisateur {user}.")
-        else:
-            self.connection.privmsg(channel, f"Aucun fichier de contexte trouvé pour {user} avec le titre {title}.")
-
-    def block_user(self, user):
-        self.blocked_users.add(user)
-
-    def unblock_user(self, user):
-        self.blocked_users.discard(user)
-
-    def change_model(self, channel, user, model):
-        valid_models = [
-            "gpt-3.5-turbo", "gpt-4", "gpt-5",
-            "o1-mini", "o1-preview", "o1", "o3-mini",
-            "gpt-4o", "gpt-4.5-preview", "gpt-4o-2024-08-06",
-            "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"
-        ]
-        if model in valid_models:
-            self.model = model
-            self.connection.privmsg(channel, f"Modèle changé à {model}.")
-        else:
-            self.connection.privmsg(channel, f"Modèle {model} invalide. Modèles valides : {', '.join(valid_models)}.")
-
-    def list_models(self, channel):
-        valid_models = [
-            "gpt-3.5-turbo", "gpt-4", "gpt-5",
-            "o1-mini", "o1-preview", "o1", "o3-mini",
-            "gpt-4o", "gpt-4.5-preview", "gpt-4o-2024-08-06",
-            "gpt-4o-mini", "gpt-3.5-turbo-16k", "gpt-4-16k"
-        ]
-        self.connection.privmsg(channel, f"Modèles valides : {', '.join(valid_models)}.")
-
-    def summarize_url(self, connection, channel, url):
+    def generate_image_description(self, connection, channel, user, image_url):
+        # Validation anti-SSRF de l'URL image avant d'appeler OpenAI
         try:
-            if not url.startswith("http"):
-                url = "http://" + url
+            image_url = validate_public_url(image_url)
+        except ValueError as e:
+            connection.privmsg(channel, f"URL invalide ou non autorisée : {e}")
+            return
 
-            # Récupérer le contenu de l'URL
-            response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
-            content = response.text
-
-            prompt = (
-                f"Voici le contenu d'une page web : {content[:4000]} \n\n"
-                f"Résume ce contenu en quelques phrases claires et concises."
-            )
-            ai_response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}]
-            )
-
-            summary = ai_response['choices'][0]['message']['content'].strip()
-            self.send_message_in_chunks(connection, channel, f"Résumé de la page : {summary}")
-        except requests.exceptions.RequestException as e:
-            connection.privmsg(channel, f"Erreur lors de la récupération de l'URL : {e}")
-        except openai.error.OpenAIError as e:
-            connection.privmsg(channel, f"Erreur lors de la génération du résumé : {e}")
-        except Exception as e:
-            connection.privmsg(channel, f"Une erreur inattendue est survenue : {e}")
-
-    def generate_image_tiny(self, connection, channel, prompt):
         try:
-            response = openai.Image.create(
-                model="dall-e-3",
-                prompt=prompt,
-                n=1,
-                size="1024x1024"
-            )
-            image_url = response['data'][0]['url']
-            shortener = pyshorteners.Shortener()
-            short_url = shortener.tinyurl.short(image_url)
-            connection.privmsg(channel, short_url)
-        except openai.error.OpenAIError as e:
-            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
-        except Exception as e:
-            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
-    def generate_image_imgbb(self, connection, channel, prompt):
-        try:
-            response = openai.Image.create(
-                model="dall-e-3",
-                prompt=prompt,
-                n=1,
-                size="1024x1024"
-            )
-            image_url = response['data'][0]['url']
-
-            # Télécharger l'image
-            image_data = requests.get(image_url, timeout=20).content
-
-            # Enregistrer l'image temporairement
-            temp_image_path = 'temp_image.png'
-            with open(temp_image_path, 'wb') as f:
-                f.write(image_data)
-
-            imgbb_response = self.imgbb_client.upload(file=temp_image_path)
-            os.remove(temp_image_path)
-
-            short_url = imgbb_response.url
-            connection.privmsg(channel, short_url)
-        except openai.error.OpenAIError as e:
-            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
-        except requests.exceptions.RequestException as e:
-            connection.privmsg(channel, f"Erreur de téléchargement de l'image: {str(e)}")
-        except imgbbpy.exceptions.ImgBBError as e:
-            connection.privmsg(channel, f"Erreur lors du téléchargement sur ImgBB: {str(e)}")
-        except Exception as e:
-            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
-    def generate_image_local(self, connection, channel, prompt):
-        try:
-            response = openai.Image.create(
-                model="dall-e-3",
-                prompt=prompt,
-                n=1,
-                size="1024x1024"
-            )
-            image_url = response['data'][0]['url']
-
-            # Télécharger l'image
-            image_response = requests.get(image_url, timeout=20)
-
-            # Sauvegarder localement dans le fichier défini dans la config
-            with open(self.image_filename, "wb") as image_file:
-                image_file.write(image_response.content)
-
-            # Envoyer l'URL publique (ton site web) où l’image est affichée
-            connection.privmsg(channel, self.web_url)
-        except openai.error.OpenAIError as e:
-            connection.privmsg(channel, f"Erreur lors de la génération de l'image: {str(e)}")
-        except requests.exceptions.RequestException as e:
-            connection.privmsg(channel, f"Erreur de téléchargement de l'image: {str(e)}")
-        except Exception as e:
-            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-
-    def generate_image_description(self, connection, channel, image_url):
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",   # modèle vision (fixé intentionnellement)
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Décrit moi cette image en détails"},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": image_url},
-                            },
+                            {"type": "text", "text": "Décris cette image en détails, en français."},
+                            {"type": "image_url", "image_url": {"url": image_url}},
                         ],
                     }
                 ],
                 max_tokens=500,
             )
-
-            # Compatibilité object / dict selon la version du client
-            msg = response.choices[0].message
-            if isinstance(msg, dict):
-                description = msg.get("content", "")
-            else:
-                description = getattr(msg, "content", "")
-
-            if not description:
-                description = "[Impossible de décrire l'image]"
-
-            self.send_message_in_chunks(connection, channel, f"Description de l'image : {description}")
-        except openai.error.OpenAIError as e:
-            connection.privmsg(channel, f"Erreur lors de l'appel à l'API OpenAI: {str(e)}")
+            description = response.choices[0].message.content or "[Impossible de décrire l'image]"
+            # Intégration dans le contexte pour la suite de la conversation
+            self.update_context(channel, user, f"[vision: {image_url}]", role="user")
+            self.update_context(channel, user, description, role="assistant")
+            self.send_message_in_chunks(connection, channel, f"Description : {description}")
+        except openai.OpenAIError as e:
+            logger.error(f"Vision OpenAI error: {e}")
+            connection.privmsg(channel, f"Erreur OpenAI vision: {e}")
         except Exception as e:
-            connection.privmsg(channel, f"Une erreur inattendue est survenue: {str(e)}")
-            
+            logger.error(f"Unexpected vision error: {e}")
+            connection.privmsg(channel, f"Erreur inattendue vision: {e}")
 
+    # ------------------------------------------------------------------ #
+    #  Résumé URL (BeautifulSoup + OpenAI v1+)                            #
+    # ------------------------------------------------------------------ #
+
+    def summarize_url(self, connection, channel, url):
+        # Validation anti-SSRF avant toute requête HTTP
+        try:
+            url = validate_public_url(url)
+        except ValueError as e:
+            connection.privmsg(channel, f"URL invalide ou non autorisée : {e}")
+            return
+
+        try:
+            # Limitation de la taille de la réponse HTTP (anti-bombes mémoire)
+            MAX_CONTENT_BYTES = 512 * 1024  # 512 Ko
+            resp = requests.get(
+                url, timeout=10,
+                headers={"User-Agent": "Mozilla/5.0"},
+                stream=True
+            )
+            resp.raise_for_status()
+
+            chunks = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=8192):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= MAX_CONTENT_BYTES:
+                    break
+
+            raw_content = b"".join(chunks)
+            resp_text = raw_content.decode("utf-8", errors="replace")
+
+            # Extraction du texte brut (pas de HTML)
+            soup = BeautifulSoup(resp_text, "html.parser")
+            text = soup.get_text(separator=" ", strip=True)[:4000]
+
+            prompt = f"Voici le contenu d'une page web :\n{text}\n\nRésume en quelques phrases claires et concises."
+            ai_response = self.openai_client.chat.completions.create(
+                model=self.model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            summary = ai_response.choices[0].message.content.strip()
+            self.send_message_in_chunks(connection, channel, f"Résumé : {summary}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur récupération URL : {e}")
+        except openai.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur OpenAI résumé : {e}")
+        except Exception as e:
+            logger.error(f"summarize_url unexpected error: {e}")
+            connection.privmsg(channel, f"Erreur inattendue : {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Génération d'images (OpenAI v1+)                                   #
+    # ------------------------------------------------------------------ #
+
+    def generate_image_tiny(self, connection, channel, prompt):
+        try:
+            response = self.openai_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
+            image_url = response.data[0].url
+            shortener = pyshorteners.Shortener()
+            short_url = shortener.tinyurl.short(image_url)
+            connection.privmsg(channel, short_url)
+        except openai.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur génération image: {e}")
+        except Exception as e:
+            connection.privmsg(channel, f"Erreur inattendue: {e}")
+
+    def generate_image_imgbb(self, connection, channel, prompt):
+        # FIX: fichier temporaire unique via tempfile.mkstemp (évite les race conditions)
+        fd, temp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            response = self.openai_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
+            image_url = response.data[0].url
+            image_data = requests.get(image_url, timeout=20).content
+
+            with open(temp_path, 'wb') as f:
+                f.write(image_data)
+
+            imgbb_response = self.imgbb_client.upload(file=temp_path)
+            connection.privmsg(channel, imgbb_response.url)
+        except openai.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur génération image: {e}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur téléchargement image: {e}")
+        except imgbbpy.exceptions.ImgBBError as e:
+            connection.privmsg(channel, f"Erreur upload ImgBB: {e}")
+        except Exception as e:
+            connection.privmsg(channel, f"Erreur inattendue: {e}")
+        finally:
+            # Suppression garantie du fichier temporaire même en cas d'erreur
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError as e:
+                    logger.warning(f"Impossible de supprimer {temp_path}: {e}")
+
+    def generate_image_local(self, connection, channel, prompt):
+        try:
+            response = self.openai_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                n=1,
+                size="1024x1024"
+            )
+            image_url = response.data[0].url
+            image_response = requests.get(image_url, timeout=20)
+
+            with open(self.image_filename, "wb") as f:
+                f.write(image_response.content)
+
+            connection.privmsg(channel, self.web_url)
+        except openai.OpenAIError as e:
+            connection.privmsg(channel, f"Erreur génération image: {e}")
+        except requests.exceptions.RequestException as e:
+            connection.privmsg(channel, f"Erreur téléchargement image: {e}")
+        except Exception as e:
+            connection.privmsg(channel, f"Erreur inattendue: {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Vidéo Sora (thread)                                                 #
+    # ------------------------------------------------------------------ #
 
     def generate_video_sora(self, connection, channel, prompt):
         if not prompt.strip():
             connection.privmsg(channel, "Prompt vide ! Exemple : video un chien qui court après une balle dans un parc")
             return
 
-        # Lancement en arrière-plan pour ne plus jamais avoir de Ping timeout
-        thread = threading.Thread(target=self._generate_video_worker, args=(connection, channel, prompt.strip()), daemon=True)
+        thread = threading.Thread(
+            target=self._generate_video_worker,
+            args=(connection, channel, prompt.strip()),
+            daemon=True
+        )
         thread.start()
-        
-        connection.privmsg(channel, "Sora-2 en cours de génération… je reviens avec la vidéo dès qu’elle est prête (30-120s)")
+        connection.privmsg(channel, "Sora-2 en cours de génération… je reviens avec la vidéo dès qu'elle est prête (30-120s)")
 
- 
- 
     def _generate_video_worker(self, connection, channel, prompt):
-        api_key = self.api_key
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        files = {
+            "model": (None, "sora-2-2025-12-08"),
+            "prompt": (None, prompt),
+            "seconds": (None, "12"),
+        }
 
         try:
-            # Étape 1 : création du job vidéo (multipart/form-data)
-            # >>> IMPORTANT : NE PAS mettre Content-Type: application/json
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-            }
-
-            # `files` permet d'envoyer du multipart/form-data avec requests
-            files = {
-                "model": (None, "sora-2"),
-                "prompt": (None, prompt.strip()),
-                # optionnels, à adapter selon la doc / ce que tu veux :
-                "seconds": (None, "12"),        # durée en secondes
-                #"size": (None, "1280x720"),     # résolution
-            }
-
-            r = requests.post(
-                "https://api.openai.com/v1/videos",
-                headers=headers,
-                files=files,
-                timeout=60,
-            )
+            r = requests.post("https://api.openai.com/v1/videos", headers=headers, files=files, timeout=60)
             r.raise_for_status()
-            data = r.json()
-            video_id = data["id"]
-            self.safe_privmsg(connection, channel, f"Sora-2 → job {video_id[-10:]} en file d’attente")
+            video_id = r.json()["id"]
+            self.safe_privmsg(connection, channel, f"Sora-2 → job {video_id[-10:]} en file d'attente")
 
-            # Étape 2 : polling de l’état
             start_time = time.time()
             completed = False
 
-            while time.time() - start_time < 900:  # 15 minutes max
+            while time.time() - start_time < 900:  # 15 min max
                 time.sleep(7)
 
                 try:
                     resp = requests.get(
                         f"https://api.openai.com/v1/videos/{video_id}",
-                        headers={"Authorization": f"Bearer {api_key}"},
+                        headers=headers,
                         timeout=60,
                     )
                     resp.raise_for_status()
                     v = resp.json()
-                except Exception:
-                    continue  # glitch réseau → on retente
+                except Exception as e:
+                    logger.warning(f"Sora polling error (retrying): {e}")
+                    continue
 
                 status = v.get("status", "").lower()
-                progress = v.get("progress", None)
-
-                #if status in ["queued", "in_progress"]:
-                    #if progress is not None:
-                        #self.safe_privmsg(connection, channel, f"{progress}% – en cours…")
-                    #continue
 
                 if status == "failed":
                     error_msg = (v.get("error") or {}).get("message", "Erreur inconnue")
@@ -534,12 +736,11 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         completed = True
                         self.safe_privmsg(connection, channel, "Vidéo générée ! Téléchargement du MP4…")
 
-                    # Étape 3 : téléchargement binaire de la vidéo
                     try:
                         resp_video = requests.get(
                             f"https://api.openai.com/v1/videos/{video_id}/content",
-                            headers={"Authorization": f"Bearer {api_key}"},
-                            params={"variant": "video"},  # ou autre variant si tu en utilises
+                            headers=headers,
+                            params={"variant": "video"},
                             timeout=300,
                             stream=True,
                         )
@@ -558,56 +759,24 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                             if chunk:
                                 f.write(chunk)
 
-                    public_url = f"https://new.labynet.fr/sora/{filename}"
-
+                    public_url = f"https://labynet.fr/sora/{filename}"
                     try:
                         shortener = pyshorteners.Shortener()
-                        public_url_short = shortener.tinyurl.short(public_url)
+                        public_url = shortener.tinyurl.short(public_url)
                     except Exception:
-                        public_url_short = public_url
+                        pass
 
-                    self.safe_privmsg(connection, channel, f"✔ Vidéo Sora-2 prête ! → {public_url_short}")
+                    self.safe_privmsg(connection, channel, f"✔ Vidéo Sora-2 prête ! → {public_url}")
                     return
 
             self.safe_privmsg(connection, channel, "⏰ Timeout 15 min – Sora-2 trop lent ou bloqué")
 
         except Exception as e:
-            self.safe_privmsg(connection, channel, f"✖ Erreur fatale Sora-2 : {str(e)}")
-
-    def safe_privmsg(self, connection, target, message):
-        try:
-            connection.privmsg(target, message)
-        except:
-            pass
-            
-    def send_message_in_chunks(self, connection, target, message):
-        if not message:
-            return
-
-        lines = message.split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            if len(line.encode('utf-8')) <= 392:
-                connection.privmsg(target, line)
-            else:
-                while line:
-                    if len(line.encode('utf-8')) > 392:
-                        last_space_index = line[:392].rfind(' ')
-                        if last_space_index == -1:
-                            connection.privmsg(target, line[:392].strip())
-                            line = line[392:]
-                        else:
-                            connection.privmsg(target, line[:last_space_index].strip())
-                            line = line[last_space_index:].strip()
-                    else:
-                        connection.privmsg(target, line.strip())
-                        line = ''
-                    time.sleep(0.5)
+            logger.error(f"Sora fatal error: {e}")
+            self.safe_privmsg(connection, channel, f"✖ Erreur fatale Sora-2 : {e}")
 
 
 if __name__ == "__main__":
-    bot = ChatGPTBot("zozo.json")
+    config_file = sys.argv[1] if len(sys.argv) > 1 else "zozo.json"
+    bot = ChatGPTBot(config_file)
     bot.start()
