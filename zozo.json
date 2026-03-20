@@ -1,15 +1,18 @@
 {
-    "channels": "#channel1,#channel2",
-    "nickname": "your_bot_nickname",
-    "server": "labynet.fr",
-    "port": 6667,
-    "api_key": "your_openai_api_key",
-    "web_url": "your url /generated_image.png",
-    "image_filename": "/path/to/the/www/folder/generated_image.png",
-    "max_num_line": 20,
-    "admin_user": "your_admin_username",
-    "imgbb_api_key": "your_imgbb_api_key"
-    "grok_api_key": "grok api key ",
-    "claude_api_key": "claude sonnet api key"
-
+  "channels": "#labynet,#test",
+  "nickname": "zozo",
+  "server": "labynet.fr",
+  "port": 6667,
+  "api_key": "sk-open ai key",
+  "max_num_line": 50,
+  "admin_user": "patricia",
+  "imgbb_api_key": "imgbb key",
+  "grok_api_key": "xai-grok key",
+  "claude_api_key": "sk-ant-ap claude key",
+  
+  "image_local_dir": "/var/www/html/images",
+  "display_url": "https://labynet.fr/images",
+  
+  "sora_local_dir": "/var/www/html/sora",
+  "sora_public_url": "https://labynet.fr/sora"
 }
