@@ -35,9 +35,30 @@ IRC_SYSTEM_PROMPT = (
 # Modèles valides mis à jour — Mars 2026
 # Sources : platform.openai.com/docs/models
 VALID_MODELS = [
-        "gpt-3.5-turbo", "gpt-4", "gpt-5",
-        "o1-mini", "o1-preview", "o1", "o3-mini",
-        "gpt-4o", "gpt-4.5-preview", "gpt-4o-2024-08-06",
+    # GPT-5.4 (famille actuelle, flagship)
+    "gpt-5",
+    "gpt-5.4",
+    "gpt-5.4-2026-03-05",
+    "gpt-5.4-pro",
+    "gpt-5.4-pro-2026-03-05",
+    "gpt-5.4-mini",
+    "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4-nano",
+    # GPT-5.2 / GPT-5.3 (toujours disponibles)
+    "gpt-5.2",
+    "gpt-5.2-pro",
+    "gpt-5.3-chat-latest",
+    # GPT-4o (toujours supportés, utiles pour audio)
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4o-2024-08-06",
+    # GPT-4.5
+    "gpt-4.5-preview",
+    # Séries o1 / o3
+    "o1-mini",
+    "o1-preview",
+    "o1",
+    "o3-mini",
 ]
 
 _BLOCKED_IP_PREFIXES = (
@@ -530,6 +551,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         try:
             response = self.openai_client.chat.completions.create(
                 model=current_model,
+                max_completion_tokens=500,
                 messages=[{"role": "system", "content": self.build_system_prompt()}] + messages
             )
             generated_text = response.choices[0].message.content.strip()
@@ -604,7 +626,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         ],
                     }
                 ],
-                max_tokens=500,
+                max_completion_tokens=500,
             )
             description = response.choices[0].message.content or "[Impossible de décrire l'image]"
             self.update_context(channel, user, f"[vision: {image_url}]", role="user")
@@ -647,7 +669,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             prompt = f"Voici le contenu d'une page web :\n{text}\n\nRésume en quelques phrases claires et concises."
             ai_response = self.openai_client.chat.completions.create(
                 model=self.model,
-                max_tokens=500,
+                max_completion_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
             summary = ai_response.choices[0].message.content.strip()
@@ -740,7 +762,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         # Vérifier sur https://platform.openai.com/docs/models le nom exact du modèle Sora disponible
         headers = {"Authorization": f"Bearer {self.api_key}"}
         files = {
-            "model": (None, "sora"),
+            "model": (None, "sora-2"),
             "prompt": (None, prompt),
             "seconds": (None, "12"),
         }
