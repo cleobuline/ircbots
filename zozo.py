@@ -626,7 +626,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                         ],
                     }
                 ],
-                max_completion_tokens=500,
+                max_tokens=500,
             )
             description = response.choices[0].message.content or "[Impossible de décrire l'image]"
             self.update_context(channel, user, f"[vision: {image_url}]", role="user")
@@ -669,7 +669,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             prompt = f"Voici le contenu d'une page web :\n{text}\n\nRésume en quelques phrases claires et concises."
             ai_response = self.openai_client.chat.completions.create(
                 model=self.model,
-                max_completion_tokens=500,
+                max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
             summary = ai_response.choices[0].message.content.strip()
@@ -758,86 +758,49 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         connection.privmsg(channel, "Sora en cours de génération… je reviens avec la vidéo dès qu'elle est prête (30-120s)")
 
     def _generate_video_worker(self, connection, channel, prompt):
-        # FIX : utilisation du nom de modèle Sora officiel (à adapter selon l'API réelle)
-        # Vérifier sur https://platform.openai.com/docs/models le nom exact du modèle Sora disponible
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        files = {
-            "model": (None, "sora-2"),
-            "prompt": (None, prompt),
-            "seconds": (None, "12"),
-        }
-
-        # FIX : sémaphore pour la vidéo aussi
         with _HEAVY_SEMAPHORE:
             try:
-                r = requests.post("https://api.openai.com/v1/videos", headers=headers, files=files, timeout=60)
-                r.raise_for_status()
-                video_id = r.json()["id"]
-                self.safe_privmsg(connection, channel, f"Sora → job {video_id[-10:]} en file d'attente")
+                # Création du job via le client OpenAI (plus propre que requests manuels)
+                video = self.openai_client.videos.create(
+                    model="sora-2",
+                    prompt=prompt,
+                    seconds=12,
+                )
+                self.safe_privmsg(connection, channel, f"Sora → job {video.id[-10:]} en file d'attente")
 
-                start_time = time.time()
-                completed = False
+                # Polling jusqu'à completion
+                while video.status in ("queued", "in_progress"):
+                    time.sleep(15)
+                    video = self.openai_client.videos.retrieve(video.id)
+                    progress = getattr(video, "progress", None)
+                    if progress:
+                        self.safe_privmsg(connection, channel, f"Sora progression : {progress}%")
 
-                while time.time() - start_time < 900:
-                    time.sleep(7)
+                if video.status == "failed":
+                    error_msg = getattr(getattr(video, "error", None), "message", "Erreur inconnue")
+                    self.safe_privmsg(connection, channel, f"✖ Échec Sora : {error_msg}")
+                    return
 
-                    try:
-                        resp = requests.get(
-                            f"https://api.openai.com/v1/videos/{video_id}",
-                            headers=headers,
-                            timeout=60,
-                        )
-                        resp.raise_for_status()
-                        v = resp.json()
-                    except Exception as e:
-                        logger.warning(f"Sora polling error (retrying): {e}")
-                        continue
+                # Téléchargement du MP4 via le client OpenAI
+                self.safe_privmsg(connection, channel, "Vidéo générée ! Téléchargement du MP4…")
+                content = self.openai_client.videos.download_content(video.id, variant="video")
 
-                    status = v.get("status", "").lower()
+                filename = f"{video.id}.mp4"
+                local_path = os.path.join(self.sora_local_dir, filename)
+                content.write_to_file(local_path)
 
-                    if status == "failed":
-                        error_msg = (v.get("error") or {}).get("message", "Erreur inconnue")
-                        self.safe_privmsg(connection, channel, f"✖ Échec Sora : {error_msg}")
-                        return
+                public_url = f"{self.sora_public_url.rstrip('/')}/{filename}"
+                try:
+                    shortener = pyshorteners.Shortener()
+                    public_url = shortener.tinyurl.short(public_url)
+                except Exception:
+                    pass
 
-                    if status == "completed":
-                        if not completed:
-                            completed = True
-                            self.safe_privmsg(connection, channel, "Vidéo générée ! Téléchargement du MP4…")
+                self.safe_privmsg(connection, channel, f"✔ Vidéo Sora prête ! → {public_url}")
 
-                        try:
-                            resp_video = requests.get(
-                                f"https://api.openai.com/v1/videos/{video_id}/content",
-                                headers=headers,
-                                params={"variant": "video"},
-                                timeout=300,
-                                stream=True,
-                            )
-                            resp_video.raise_for_status()
-                        except Exception as e:
-                            self.safe_privmsg(connection, channel, f"✖ Erreur download Sora : {e}")
-                            return
-
-                        filename = f"{video_id}.mp4"
-                        local_path = os.path.join(self.sora_local_dir, filename)
-
-                        with open(local_path, "wb") as f:
-                            for chunk in resp_video.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-
-                        public_url = f"{self.sora_public_url.rstrip('/')}/{filename}"
-                        try:
-                            shortener = pyshorteners.Shortener()
-                            public_url = shortener.tinyurl.short(public_url)
-                        except Exception:
-                            pass
-
-                        self.safe_privmsg(connection, channel, f"✔ Vidéo Sora prête ! → {public_url}")
-                        return
-
-                self.safe_privmsg(connection, channel, "⏰ Timeout 15 min – Sora trop lent ou bloqué")
-
+            except openai.OpenAIError as e:
+                logger.exception("Sora OpenAI error")
+                self.safe_privmsg(connection, channel, f"✖ Erreur Sora : {e}")
             except Exception as e:
                 logger.exception("Sora fatal error")
                 self.safe_privmsg(connection, channel, f"✖ Erreur fatale Sora : {e}")
