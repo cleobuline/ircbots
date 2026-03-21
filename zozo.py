@@ -188,6 +188,11 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             if user in self.blocked_users:
                 return
 
+        # Ignore les messages qui ne s'adressent pas au bot (évite de
+        # comptabiliser les bavardages normaux du chan dans le rate-limit).
+        if not message.strip().startswith(bot_nickname + ":"):
+            return
+
         if user != self.admin_user:
             now = time.time()
             with self._rate_limit_lock:
@@ -768,17 +773,38 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 )
                 self.safe_privmsg(connection, channel, f"Sora → job {video.id[-10:]} en file d'attente")
 
-                # Polling jusqu'à completion
+                # Polling jusqu'à completion — timeout + anti-spam + stagnation
+                SORA_TIMEOUT_SECONDS = 600   # 10 min max
+                SORA_STALL_SECONDS   = 120   # abandon si progress figé 2 min
+                SORA_POLL_INTERVAL   = 15
+                deadline             = time.time() + SORA_TIMEOUT_SECONDS
+                last_progress        = None
+                last_progress_change = time.time()
+
                 while video.status in ("queued", "in_progress"):
-                    time.sleep(15)
-                    video = self.openai_client.videos.retrieve(video.id)
+                    now = time.time()
+                    if now > deadline:
+                        self.safe_privmsg(connection, channel, f"✖ Sora timeout : job {video.id[-10:]} abandonné après {SORA_TIMEOUT_SECONDS}s.")
+                        return
+                    time.sleep(SORA_POLL_INTERVAL)
+                    video    = self.openai_client.videos.retrieve(video.id)
                     progress = getattr(video, "progress", None)
-                    if progress:
-                        self.safe_privmsg(connection, channel, f"Sora progression : {progress}%")
+                    if progress != last_progress:
+                        last_progress        = progress
+                        last_progress_change = time.time()
+                        if progress is not None:
+                            self.safe_privmsg(connection, channel, f"Sora progression : {progress}%")
+                    elif time.time() - last_progress_change > SORA_STALL_SECONDS:
+                        self.safe_privmsg(connection, channel, f"✖ Sora bloqué à {last_progress}% depuis {SORA_STALL_SECONDS}s — job abandonné.")
+                        return
 
                 if video.status == "failed":
                     error_msg = getattr(getattr(video, "error", None), "message", "Erreur inconnue")
                     self.safe_privmsg(connection, channel, f"✖ Échec Sora : {error_msg}")
+                    return
+
+                if video.status != "completed":
+                    self.safe_privmsg(connection, channel, f"✖ Sora statut inattendu : {video.status!r} — job abandonné.")
                     return
 
                 # Téléchargement du MP4 via le client OpenAI
