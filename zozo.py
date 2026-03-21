@@ -544,6 +544,15 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
     #  Génération de texte (Threaded)                                    #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _completion_tokens_kwarg(model: str, n: int) -> dict:
+        """Retourne le bon paramètre de limite selon la famille du modèle.
+        gpt-5.x, o1, o3 → max_completion_tokens ; autres → max_tokens.
+        """
+        if any(model.startswith(p) for p in ("gpt-5", "o1", "o3")):
+            return {"max_completion_tokens": n}
+        return {"max_tokens": n}
+
     def _thread_generate_response(self, connection, channel, user):
         key = (channel, user)
         with self._context_lock:
@@ -553,16 +562,26 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
 
         current_model = self.model  # lecture thread-safe via property
 
+        MAX_IRC_LINES = 200  # au-delà on tronque pour éviter le flood
+
         try:
             response = self.openai_client.chat.completions.create(
                 model=current_model,
-                max_completion_tokens=500,
+                **self._completion_tokens_kwarg(current_model, 1500),
                 messages=[{"role": "system", "content": self.build_system_prompt()}] + messages
             )
             generated_text = response.choices[0].message.content.strip()
             readable_text = LatexNodes2Text().latex_to_text(generated_text)
             self.update_context(channel, user, generated_text, role="assistant")
-            self.send_message_in_chunks(connection, channel, readable_text)
+
+            # Tronquer les réponses trop longues pour ne pas flooder le chan
+            lines = [l for l in readable_text.splitlines() if l.strip()]
+            if len(lines) > MAX_IRC_LINES:
+                truncated = "\n".join(lines[:MAX_IRC_LINES])
+                truncated += f"\n[… réponse tronquée à {MAX_IRC_LINES} lignes — demande une version plus courte ou précise ta question]"
+                self.send_message_in_chunks(connection, channel, truncated)
+            else:
+                self.send_message_in_chunks(connection, channel, readable_text)
         except openai.OpenAIError as e:
             logger.exception("OpenAI error")
             self.safe_privmsg(connection, channel, f"[Erreur OpenAI: {e}]")
