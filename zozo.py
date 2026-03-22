@@ -38,8 +38,7 @@ VALID_MODELS = [
     "gpt-5.4-mini", "gpt-5.4-mini-2026-03-17", "gpt-5.4-nano",
     "gpt-5.2", "gpt-5.2-pro", "gpt-5.3-chat-latest",
     "gpt-4o", "gpt-4o-mini", "gpt-4o-2024-08-06",
-    "gpt-4.5-preview",
-    "o1-mini", "o1-preview", "o1", "o3-mini",
+    "o1-mini", "o1", "o3-mini",
 ]
 
 _BLOCKED_IP_PREFIXES = (
@@ -123,6 +122,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         self._model_lock = threading.Lock()
         self._model = "gpt-4o-mini"
 
+        self._tag_lock = threading.Lock()
         self.tag = ""
 
         self.openai_client = openai.OpenAI(api_key=self.api_key)
@@ -170,8 +170,8 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         time.sleep(15)
         try:
             self.jump_server()
-        except Exception as e:
-            logger.error(f"Erreur reconnexion : {e}")
+        except Exception:
+            pass
 
     def on_pubmsg(self, connection, event):
         message = event.arguments[0].strip()
@@ -203,8 +203,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         command, args = self.parse_command(message)
 
         if command == "tag" and user == self.admin_user:
-            self.tag = args.strip()
-            connection.privmsg(channel, f"Tag mis à jour : {self.tag}")
+            with self._tag_lock:
+                self.tag = args.strip()
+                tag_display = self.tag
+            connection.privmsg(channel, f"Tag mis à jour : {tag_display}")
 
         elif command == "help":
             self.send_help_message(connection, channel)
@@ -286,8 +288,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
 
     def build_system_prompt(self):
         prompt = IRC_SYSTEM_PROMPT
-        if self.tag:
-            prompt += f" Préfixe obligatoire : commence chaque ligne de ta réponse par '{self.tag} '."
+        with self._tag_lock:
+            tag = self.tag
+        if tag:
+            prompt += f" Préfixe obligatoire : commence chaque ligne de ta réponse par '{tag} '."
         return prompt
 
     def send_help_message(self, connection, channel):
@@ -456,7 +460,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
         try:
             # Les modèles o1/o3 ne supportent pas le paramètre temperature
             is_reasoning_model = any(self.model.startswith(x) for x in ("o1", "o3"))
-            is_heavy_model = is_reasoning_model or self.model.startswith("gpt-5")
+            is_heavy_model = is_reasoning_model or any(self.model.startswith(x) for x in ("gpt-5", "gpt-4.5"))
             extra_params = {} if is_heavy_model else {"temperature": 0.85}
             # Timeout et tokens plus généreux pour les modèles lourds
             api_timeout = 300 if is_heavy_model else 60
@@ -470,7 +474,10 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                 timeout=api_timeout,
                 **extra_params,
             )
-            text = response.choices[0].message.content.strip()
+            text = (response.choices[0].message.content or "").strip()
+            if not text:
+                self.safe_privmsg(connection, channel, "[Pas de réponse du modèle.]")
+                return
             readable = LatexNodes2Text().latex_to_text(text)
             self.update_context(channel, user, text, "assistant")
             self.send_message_in_chunks(connection, channel, readable)
@@ -492,6 +499,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
                     ]
                 }],
                 max_tokens=600,
+                timeout=60,
             )
             desc = response.choices[0].message.content or "Impossible de décrire l'image."
             self.update_context(channel, user, f"[vision: {image_url}]", "user")
@@ -520,6 +528,7 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             summary_resp = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 max_tokens=500,
+                timeout=60,
                 messages=[{"role": "user", "content": f"Résume clairement en français cette page web :\n{text}"}]
             )
             summary = summary_resp.choices[0].message.content.strip()
