@@ -312,22 +312,25 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             line = line.strip()
             if not line:
                 continue
-            while line:
-                encoded = line.encode('utf-8')
-                if len(encoded) <= MAX_BYTES:
-                    self.safe_privmsg(connection, target, line)
+            remaining = line.encode('utf-8')
+            while remaining:
+                if len(remaining) <= MAX_BYTES:
+                    self.safe_privmsg(connection, target, remaining.decode('utf-8'))
                     break
+                # Recule jusqu'à une frontière de caractère UTF-8 valide
                 cut = MAX_BYTES
-                while cut > 0 and (encoded[cut] & 0xC0) == 0x80:
+                while cut > 0 and (remaining[cut] & 0xC0) == 0x80:
                     cut -= 1
-                chunk = encoded[:cut].decode('utf-8', errors='replace')
-                last_space = chunk.rfind(' ')
+                # Coupe sur le dernier espace si possible
+                chunk_bytes = remaining[:cut]
+                last_space = chunk_bytes.rfind(b' ')
                 if last_space > 5:
-                    self.safe_privmsg(connection, target, chunk[:last_space].strip())
-                    line = chunk[last_space:].strip() + line[len(chunk):]
+                    to_send = chunk_bytes[:last_space]
+                    remaining = chunk_bytes[last_space:].lstrip(b' ') + remaining[cut:]
                 else:
-                    self.safe_privmsg(connection, target, chunk.strip())
-                    line = line[len(chunk):]
+                    to_send = chunk_bytes
+                    remaining = remaining[cut:]
+                self.safe_privmsg(connection, target, to_send.decode('utf-8'))
                 time.sleep(0.35)
 
     # ====================== Contexte ======================
