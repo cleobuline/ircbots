@@ -451,11 +451,21 @@ class ChatGPTBot(irc.bot.SingleServerIRCBot):
             return
 
         try:
+            # Les modèles o1/o3 ne supportent pas le paramètre temperature
+            is_reasoning_model = any(self.model.startswith(x) for x in ("o1", "o3"))
+            is_heavy_model = is_reasoning_model or self.model.startswith("gpt-5")
+            extra_params = {} if is_heavy_model else {"temperature": 0.85}
+            # Timeout et tokens plus généreux pour les modèles lourds
+            api_timeout = 300 if is_heavy_model else 60
+            max_tokens = 8000 if is_heavy_model else 1500
+            if is_heavy_model:
+                self.safe_privmsg(connection, channel, f"{user}: réflexion en cours avec {self.model}, patience...")
             response = self.openai_client.chat.completions.create(
                 model=self.model,
-                max_completion_tokens=1500 if any(self.model.startswith(x) for x in ("gpt-5", "o1", "o3")) else 1500,
+                max_completion_tokens=max_tokens,
                 messages=[{"role": "system", "content": self.build_system_prompt()}] + messages,
-                temperature=0.85,
+                timeout=api_timeout,
+                **extra_params,
             )
             text = response.choices[0].message.content.strip()
             readable = LatexNodes2Text().latex_to_text(text)
