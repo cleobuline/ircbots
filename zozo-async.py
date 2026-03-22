@@ -1,6 +1,7 @@
 import irc3
 import asyncio
 import httpx
+import openai
 import json
 import logging
 import os
@@ -10,6 +11,8 @@ import socket
 import hashlib
 import uuid
 import tempfile
+import time
+import base64
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from pylatexenc.latex2text import LatexNodes2Text
@@ -37,7 +40,6 @@ VALID_MODELS = [
     "o1-mini", "o1", "o3-mini",
 ]
 
-OPENAI_API_BASE = "https://api.openai.com/v1"
 TINYURL_API     = "https://tinyurl.com/api-create.php"
 IMGBB_API_BASE  = "https://api.imgbb.com/1/upload"
 
@@ -124,6 +126,9 @@ class ZozoPlugin:
             headers={"User-Agent": "ZozoBot/2.0"},
             follow_redirects=True,
         )
+
+        # Client OpenAI async officiel (utilisé pour Sora)
+        self._openai = openai.AsyncOpenAI(api_key=self.api_key)
 
         # Création des dossiers nécessaires
         for d in ["conversations", self.image_local_dir, self.sora_local_dir]:
@@ -265,39 +270,28 @@ class ZozoPlugin:
 
     async def _openai_chat(self, messages: list, model: str) -> str:
         """Appelle l'API chat/completions et retourne le texte de la réponse."""
-        heavy   = is_heavy_model(model)
-        timeout = 300 if heavy else 60
-        payload = {
+        heavy  = is_heavy_model(model)
+        kwargs = {
             "model": model,
             "max_completion_tokens": 8000 if heavy else 1500,
             "messages": messages,
+            "timeout": 300 if heavy else 60,
         }
-        if not is_reasoning_model(model) and not heavy:
-            payload["temperature"] = 0.85
-        elif not is_reasoning_model(model):
-            # gpt-5 / gpt-4.5 : pas de temperature non-défaut
-            pass
-
-        resp = await self._http.post(
-            f"{OPENAI_API_BASE}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=payload,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return (data["choices"][0]["message"]["content"] or "").strip()
+        if not is_heavy_model(model):
+            kwargs["temperature"] = 0.85
+        resp = await self._openai.chat.completions.create(**kwargs)
+        return (resp.choices[0].message.content or "").strip()
 
     async def _openai_image(self, prompt: str) -> str:
         """Génère une image DALL-E 3 et retourne l'URL temporaire OpenAI."""
-        resp = await self._http.post(
-            f"{OPENAI_API_BASE}/images/generations",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": "dall-e-3", "prompt": prompt, "n": 1, "size": "1024x1024"},
+        resp = await self._openai.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            n=1,
+            size="1024x1024",
             timeout=120,
         )
-        resp.raise_for_status()
-        return resp.json()["data"][0]["url"]
+        return resp.data[0].url
 
     async def _tinyurl(self, url: str) -> str:
         """Raccourcit une URL via TinyURL."""
@@ -307,7 +301,7 @@ class ZozoPlugin:
 
     async def _imgbb_upload(self, image_bytes: bytes) -> str:
         """Upload une image sur ImgBB et retourne son URL publique."""
-        import base64
+        
         b64 = base64.b64encode(image_bytes).decode()
         r = await self._http.post(
             IMGBB_API_BASE,
@@ -422,37 +416,27 @@ class ZozoPlugin:
     async def _task_sora(self, channel: str, prompt: str):
         async with _HEAVY_SEMAPHORE:
             try:
-                # Lancement du job Sora
-                resp = await self._http.post(
-                    f"{OPENAI_API_BASE}/videos",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={"model": "sora-2", "prompt": prompt, "seconds": "4"},
-                    timeout=30,
+                # Lancement du job via la lib officielle openai async
+                video = await self._openai.videos.create(
+                    model="sora-2",
+                    prompt=prompt,
+                    seconds=4,
                 )
-                resp.raise_for_status()
-                video = resp.json()
-                video_id = video["id"]
-                self.privmsg(channel, f"Sora → job {video_id[-10:]} lancé...")
+                self.privmsg(channel, f"Sora → job {video.id[-10:]} lancé...")
 
-                deadline     = asyncio.get_event_loop().time() + 600
+                deadline      = asyncio.get_event_loop().time() + 600
                 last_progress = None
                 last_change   = asyncio.get_event_loop().time()
                 STALL_TIMEOUT = 120
 
-                while video.get("status") in ("queued", "in_progress"):
+                while video.status in ("queued", "in_progress"):
                     if asyncio.get_event_loop().time() > deadline:
                         self.privmsg(channel, "Sora timeout (10 min), job abandonné.")
                         return
                     await asyncio.sleep(15)
-                    r = await self._http.get(
-                        f"{OPENAI_API_BASE}/videos/{video_id}",
-                        headers={"Authorization": f"Bearer {self.api_key}"},
-                        timeout=30,
-                    )
-                    r.raise_for_status()
-                    video = r.json()
+                    video = await self._openai.videos.retrieve(video.id)
 
-                    progress = video.get("progress")
+                    progress = getattr(video, "progress", None)
                     now = asyncio.get_event_loop().time()
                     if progress != last_progress:
                         last_progress = progress
@@ -463,18 +447,13 @@ class ZozoPlugin:
                         self.privmsg(channel, f"✖ Sora bloqué à {last_progress}% depuis {STALL_TIMEOUT}s — abandonné.")
                         return
 
-                if video.get("status") == "completed":
+                if video.status == "completed":
                     self.privmsg(channel, "Vidéo terminée, téléchargement...")
-                    dl = await self._http.get(
-                        f"{OPENAI_API_BASE}/videos/{video_id}/content",
-                        headers={"Authorization": f"Bearer {self.api_key}"},
-                        timeout=120,
-                    )
-                    dl.raise_for_status()
-                    filename   = f"{video_id}.mp4"
+                    filename   = f"{video.id}.mp4"
                     local_path = os.path.join(self.sora_local_dir, filename)
+                    raw = await self._openai.videos.download_content(video.id, variant="video")
                     with open(local_path, "wb") as f:
-                        f.write(dl.content)
+                        f.write(raw.read())
                     public_url = f"{self.sora_public_url.rstrip('/')}/{filename}"
                     try:
                         public_url = await self._tinyurl(public_url)
@@ -482,7 +461,7 @@ class ZozoPlugin:
                         pass
                     self.privmsg(channel, f"✔ Vidéo Sora prête → {public_url}")
                 else:
-                    self.privmsg(channel, f"Échec Sora : statut {video.get('status')}")
+                    self.privmsg(channel, f"Échec Sora : statut {video.status}")
             except Exception as e:
                 logger.exception("Sora error")
                 self.privmsg(channel, f"Erreur Sora : {e}")
@@ -507,7 +486,7 @@ class ZozoPlugin:
 
         # Rate-limit (admin exempté)
         if nick != self.admin_user:
-            import time
+
             now = time.monotonic()
             last = self._user_last_call.get(nick, 0)
             if now - last < self.rate_limit_secs:
