@@ -149,6 +149,8 @@ class ZozoPlugin:
         self.blocked_users   = set()
         self._user_last_call = {}
         self._context_last_used = {}
+        # FIX: verrous par (channel, nick) pour sérialiser les _task_chat concurrentes
+        self._user_locks = {}
 
         # FIX: Semaphore créé ici, dans le bon contexte asyncio
         self._heavy_semaphore = asyncio.Semaphore(4)
@@ -411,30 +413,32 @@ class ZozoPlugin:
     # ====================== Tâches ======================
     async def _task_chat(self, channel: str, nick: str):
         key = (channel, nick)
-        # FIX: snapshot du contexte au moment de l'appel pour limiter la race condition
-        messages = list(self.user_contexts.get(key, []))
-        if not messages:
-            return
-        model = self._model
-        if is_heavy_model(model):
-            self.privmsg(channel, f"{nick}: réflexion en cours avec {model}, patience...")
-
-        try:
-            text = await self._openai_chat(
-                [{"role": "system", "content": self.build_system_prompt()}] + messages,
-                model, channel, nick
-            )
-            if not text:
-                self.privmsg(channel, "[Pas de réponse du modèle.]")
+        # FIX: verrou par utilisateur — sérialise les appels concurrents pour éviter
+        # les doublons et la désynchronisation du contexte en cas de messages rapides.
+        async with self._user_locks.setdefault(key, asyncio.Lock()):
+            messages = list(self.user_contexts.get(key, []))
+            if not messages:
                 return
-            readable = LatexNodes2Text().latex_to_text(text)
-            self.update_context(channel, nick, text, "assistant")
-            await self.send_chunks(channel, readable)
-        except asyncio.TimeoutError:
-            self.privmsg(channel, f"[Timeout : le modèle {model} n'a pas répondu à temps.]")
-        except Exception as e:
-            logger.exception("Erreur chat")
-            self.privmsg(channel, f"[Erreur : {str(e)[:150]}]")
+            model = self._model
+            if is_heavy_model(model):
+                self.privmsg(channel, f"{nick}: réflexion en cours avec {model}, patience...")
+
+            try:
+                text = await self._openai_chat(
+                    [{"role": "system", "content": self.build_system_prompt()}] + messages,
+                    model, channel, nick
+                )
+                if not text:
+                    self.privmsg(channel, "[Pas de réponse du modèle.]")
+                    return
+                readable = LatexNodes2Text().latex_to_text(text)
+                self.update_context(channel, nick, text, "assistant")
+                await self.send_chunks(channel, readable)
+            except asyncio.TimeoutError:
+                self.privmsg(channel, f"[Timeout : le modèle {model} n'a pas répondu à temps.]")
+            except Exception as e:
+                logger.exception("Erreur chat")
+                self.privmsg(channel, f"[Erreur : {str(e)[:150]}]")
 
     async def _task_vision(self, channel: str, nick: str, image_url: str):
         try:
@@ -454,7 +458,7 @@ class ZozoPlugin:
             logger.exception("Vision error")
             self.privmsg(channel, f"Erreur vision : {e}")
 
-    async def _task_summarize_url(self, channel: str, url: str):
+    async def _task_summarize_url(self, channel: str, nick: str, url: str):
         try:
             url = await validate_public_url(url)
             resp = await self._http.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
@@ -463,9 +467,9 @@ class ZozoPlugin:
                 resp.content[:512 * 1024].decode("utf-8", errors="replace"),
                 "html.parser"
             )
-            page_text_raw = soup.get_text(separator=" ", strip=True)
-
-            # FIX: tronquer en tokens plutôt qu'en caractères pour respecter la limite du modèle
+            # FIX: tronque d'abord en caractères pour éviter un pic RAM/CPU sur les pages immenses,
+            # puis affine en tokens pour respecter la limite du modèle.
+            page_text_raw = soup.get_text(separator=" ", strip=True)[:15_000]
             try:
                 tokens = self._tokenizer.encode(page_text_raw)
                 page_text = self._tokenizer.decode(tokens[:3000])
@@ -474,12 +478,16 @@ class ZozoPlugin:
 
             summary = await self._openai_chat(
                 [{"role": "user", "content": f"Résume clairement en français cette page web :\n{page_text}"}],
-                "gpt-4o-mini"
+                "gpt-4o-mini", channel, nick
             )
-            await self.send_chunks(
-                channel,
-                f"Résumé : {summary}" if summary else "Impossible de résumer cette page."
-            )
+            if summary:
+                # FIX: injecte l'URL et le résumé dans le contexte pour permettre
+                # des questions de suivi sur le contenu de la page.
+                self.update_context(channel, nick, f"[url: {url}]", "user")
+                self.update_context(channel, nick, summary, "assistant")
+                await self.send_chunks(channel, f"Résumé : {summary}")
+            else:
+                await self.send_chunks(channel, "Impossible de résumer cette page.")
         except Exception as e:
             logger.exception("URL summarize error")
             self.privmsg(channel, f"Erreur résumé URL : {e}")
@@ -687,7 +695,7 @@ class ZozoPlugin:
             if not args:
                 self.privmsg(channel, "URL manquante !")
             else:
-                asyncio.create_task(self._task_summarize_url(channel, args))
+                asyncio.create_task(self._task_summarize_url(channel, nick, args))
         elif command == "video":
             if not args:
                 self.privmsg(channel, "Prompt vide !")
