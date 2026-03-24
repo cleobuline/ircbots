@@ -1,0 +1,7 @@
+irc3
+asyncio
+httpx
+openai>=1.0.0
+beautifulsoup4
+tiktoken
+pylatexenc
