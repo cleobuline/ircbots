@@ -23,7 +23,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-
+logging.getLogger("httpx").setLevel(logging.WARNING)
 IRC_SYSTEM_PROMPT = (
     "Tu es un assistant IA sur un serveur IRC. "
     "Réponds de manière concise et sans formatage Markdown "
