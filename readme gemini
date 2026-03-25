@@ -1,38 +1,41 @@
 ==========================================================
-       DOCUMENTATION RÉELLE - BOT GEMINI (GOOGLE API)
+       DOCUMENTATION  - BOT GEMINI (GOOGLE API)
 ==========================================================
 
-Ce bot fonctionne avec le SDK Google GenAI et les modèles 2026.
+Le bot réagit uniquement quand on s'adresse à lui par son 
+nom : "gemini: <commande ou texte>"
 
 ----------------------------------------------------------
-1. MODÈLES UTILISÉS
+1. DISCUSSION (CHAT)
 ----------------------------------------------------------
-* CHAT   : Gemini 2.5 Flash (pour la discussion et vision)
-* IMAGE  : Imagen 4.0 (génération haute fidélité)
-* VIDEO  : Veo 3.1 (vidéos de 4 secondes, format 9:16)
+gemini: <ton message>
+-> Lance une discussion avec Gemini 2.5 Flash.
+-> Le bot mémorise les 20 derniers messages du contexte.
 
 ----------------------------------------------------------
-2. COMMANDES DE GÉNÉRATION (GOOGLE)
+2. GÉNÉRATION & VISION (MODÈLES GOOGLE 2026)
 ----------------------------------------------------------
-!image <prompt>  : Génère une image via Imagen 4.0.
-!video <prompt>  : Génère une vidéo via Veo 3.1 (smartphone vertical).
-!vision <url>    : Analyse et décrit une image via Gemini 2.5 Flash.
+gemini: image <prompt>  -> Génère une image via Imagen 4.0.
+gemini: local <prompt>  -> Idem (sauvegarde locale).
+gemini: video <prompt>  -> Génère une vidéo via Veo 3.1 (4-5s).
+gemini: vision <url>    -> Analyse une image (jpg/png/webp) via 
+                           Gemini 2.5 Flash.
 
 ----------------------------------------------------------
-3. GESTION DU CONTEXTE (SÉRIALISÉ)
+3. GESTION DE LA MÉMOIRE
 ----------------------------------------------------------
-* raz            : Oublie la conversation en cours.
-* save [titre]   : Sauvegarde le contexte en JSON (texte brut).
-* load [titre]   : Recharge une conversation sauvegardée.
-* help           : Liste les commandes disponibles.
+gemini: raz             -> Efface le contexte actuel.
+gemini: save <titre>    -> Sauvegarde le contexte en JSON.
+gemini: load <titre>    -> Charge un contexte sauvegardé.
+gemini: help            -> Affiche les commandes de base.
 
 ----------------------------------------------------------
-4. SPÉCIFICITÉS TECHNIQUES
+4. NOTES TECHNIQUES
 ----------------------------------------------------------
-* NETTOYAGE      : Conversion LaTeX, retrait du Markdown (*, #, _) 
-                   et mise à plat des sauts de ligne.
-* SÉCURITÉ       : Verrouillage des contextes (asyncio.Lock) pour
-                   éviter les collisions entre utilisateurs.
-* ENVOI          : Découpage des messages en morceaux de 392 octets
-                   pour la compatibilité IRC.
+* SÉCURITÉ : Utilise des verrous (Locks) pour éviter les 
+  collisions de contexte entre utilisateurs.
+* NETTOYAGE : Conversion LaTeX, suppression du Markdown 
+  et remise à plat des messages pour IRC.
+* FLOOD : Découpage automatique des messages longs pour 
+  éviter le kick du serveur.
 ==========================================================
