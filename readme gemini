@@ -1,49 +1,38 @@
 ==========================================================
-       DOCUMENTATION UTILISATEUR - BOT GEMINI 2026
+       DOCUMENTATION RÉELLE - BOT GEMINI (GOOGLE API)
 ==========================================================
 
-Ce bot utilise l'intelligence artificielle Google Gemini 2.5 Flash
-pour discuter, analyser des images et générer du contenu multimédia.
+Ce bot fonctionne avec le SDK Google GenAI et les modèles 2026.
 
 ----------------------------------------------------------
-1. DISCUSSION (CHAT)
+1. MODÈLES UTILISÉS
 ----------------------------------------------------------
-Pour discuter avec le bot, préfixe ton message par son pseudo :
-  gemini: <ton message>
-
-Le bot garde en mémoire les derniers messages (max 20) pour 
-suivre le fil de la conversation.
+* CHAT   : Gemini 2.5 Flash (pour la discussion et vision)
+* IMAGE  : Imagen 4.0 (génération haute fidélité)
+* VIDEO  : Veo 3.1 (vidéos de 4 secondes, format 9:16)
 
 ----------------------------------------------------------
-2. GÉNÉRATION MULTIMÉDIA
+2. COMMANDES DE GÉNÉRATION (GOOGLE)
 ----------------------------------------------------------
-!image <prompt>  : Génère une image avec Imagen 4.0 et donne
-                   le lien URL.
-!video <prompt>  : Génère une vidéo de 4s avec Veo 3.1. 
-                   Le processus peut prendre 1 à 2 minutes.
-!vision <url>    : Analyse l'image située à l'URL (jpg/png/webp) 
-                   et en fait une description détaillée.
+!image <prompt>  : Génère une image via Imagen 4.0.
+!video <prompt>  : Génère une vidéo via Veo 3.1 (smartphone vertical).
+!vision <url>    : Analyse et décrit une image via Gemini 2.5 Flash.
 
 ----------------------------------------------------------
-3. GESTION DE LA MÉMOIRE (CONTEXTE)
+3. GESTION DU CONTEXTE (SÉRIALISÉ)
 ----------------------------------------------------------
-!raz             : Efface la mémoire immédiate du bot pour 
-                   repartir de zéro.
-!save <titre>    : Sauvegarde la conversation actuelle sous 
-                   un nom de fichier.
-!load <titre>    : Charge une conversation précédemment sauvée.
-!help            : Affiche un résumé rapide des commandes.
+* raz            : Oublie la conversation en cours.
+* save [titre]   : Sauvegarde le contexte en JSON (texte brut).
+* load [titre]   : Recharge une conversation sauvegardée.
+* help           : Liste les commandes disponibles.
 
 ----------------------------------------------------------
-4. RÈGLES D'AFFICHAGE (IRC SAFE)
+4. SPÉCIFICITÉS TECHNIQUES
 ----------------------------------------------------------
-* Le bot convertit automatiquement les formules mathématiques 
-  complexes (LaTeX) en texte lisible.
-* Tout formatage Markdown (gras, italique, titres) est 
-  automatiquement supprimé pour une lecture claire.
-* Les messages trop longs sont découpés en plusieurs morceaux
-  pour éviter d'être coupé par le serveur IRC.
-
-----------------------------------------------------------
-Admin : %ADMIN% | Modèle : gemini-2.5-flash
+* NETTOYAGE      : Conversion LaTeX, retrait du Markdown (*, #, _) 
+                   et mise à plat des sauts de ligne.
+* SÉCURITÉ       : Verrouillage des contextes (asyncio.Lock) pour
+                   éviter les collisions entre utilisateurs.
+* ENVOI          : Découpage des messages en morceaux de 392 octets
+                   pour la compatibilité IRC.
 ==========================================================
