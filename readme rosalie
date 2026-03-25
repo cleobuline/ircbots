@@ -1,0 +1,66 @@
+==========================================================
+       DOCUMENTATION UTILISATEUR - BOT ROSALIE
+==========================================================
+
+Rosalie est un bot utilitaire gérant les services pratiques, 
+l'astronomie, les loisirs et l'actualité en temps réel.
+
+----------------------------------------------------------
+1. ACTUALITÉS (RSS)
+----------------------------------------------------------
+!rss [thème]  : Affiche les 3 dernières dépêches d'un thème.
+   Thèmes disponibles : 
+   - afp     : Dernières dépêches mondiales (via Le Point/AFP).
+   - monde   : Actualité générale (via Le Monde).
+   - iran    : Infos Moyen-Orient (via RFI).
+   - actu    : Actualité France (via Le Figaro).
+   - tech    : Actualité High-Tech (via Clubic).
+   - science : Sciences et Avenir.
+   - sport   : RMC Sport.
+
+----------------------------------------------------------
+2. ASTROLOGIE & ASTRONOMIE
+----------------------------------------------------------
+!horo <signe> : Affiche l'horoscope du jour pour le signe 
+                précisé (ex: !horo lion).
+!moon         : Donne la phase actuelle de la lune, son 
+                illumination, ainsi que les heures de lever 
+                et de coucher pour Paris.
+
+----------------------------------------------------------
+3. SERVICES & OUTILS
+----------------------------------------------------------
+!w <ville>    : Météo complète (Température, vent, humidité).
+!time <ville> : Heure locale et fuseau horaire d'une ville.
+!solar <ville>: Calcule l'heure solaire exacte selon la 
+                position géographique.
+!calc <expr>  : Calculatrice scientifique (ex: !calc sqrt(16)*pi).
+!dico <mot>   : Définition de la langue française (Larousse).
+!geo <lieu>   : Génère un lien Google Maps pour un lieu.
+
+----------------------------------------------------------
+4. DIVERTISSEMENT & YOUTUBE
+----------------------------------------------------------
+!yt <recherche> : Cherche une vidéo sur YouTube et affiche 
+                  les infos (vues, durée, lien).
+!dl <url>       : Télécharge une vidéo YouTube et donne un 
+                  lien de téléchargement local (.mp4).
+!joke [lang]    : Raconte une blague (fr, en, es, etc.).
+!insult <pseudo>: Envoie une insulte médiévale à une cible.
+!verlan <texte> : Transforme ton texte en verlan.
+
+----------------------------------------------------------
+5. TRADUCTION
+----------------------------------------------------------
+!<lang> <texte> : Traduit le texte vers la langue choisie.
+   Exemples : !en (anglais), !de (allemand), !it (italien), 
+   !ja (japonais), !ru (russe), !ar (arabe), !zh (chinois).
+
+----------------------------------------------------------
+INFOS TECHNIQUES
+----------------------------------------------------------
+- Moteur : irc.bot (SingleServerIRCBot).
+- Anti-Flood : Découpage automatique des messages longs.
+- Sécurité : Utilise des sessions HTTP pour éviter les 
+  blocages serveurs sur les flux RSS.
+==========================================================
