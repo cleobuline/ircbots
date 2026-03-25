@@ -1,0 +1,49 @@
+==========================================================
+       DOCUMENTATION UTILISATEUR - BOT GEMINI 2026
+==========================================================
+
+Ce bot utilise l'intelligence artificielle Google Gemini 2.5 Flash
+pour discuter, analyser des images et générer du contenu multimédia.
+
+----------------------------------------------------------
+1. DISCUSSION (CHAT)
+----------------------------------------------------------
+Pour discuter avec le bot, préfixe ton message par son pseudo :
+  gemini: <ton message>
+
+Le bot garde en mémoire les derniers messages (max 20) pour 
+suivre le fil de la conversation.
+
+----------------------------------------------------------
+2. GÉNÉRATION MULTIMÉDIA
+----------------------------------------------------------
+!image <prompt>  : Génère une image avec Imagen 4.0 et donne
+                   le lien URL.
+!video <prompt>  : Génère une vidéo de 4s avec Veo 3.1. 
+                   Le processus peut prendre 1 à 2 minutes.
+!vision <url>    : Analyse l'image située à l'URL (jpg/png/webp) 
+                   et en fait une description détaillée.
+
+----------------------------------------------------------
+3. GESTION DE LA MÉMOIRE (CONTEXTE)
+----------------------------------------------------------
+!raz             : Efface la mémoire immédiate du bot pour 
+                   repartir de zéro.
+!save <titre>    : Sauvegarde la conversation actuelle sous 
+                   un nom de fichier.
+!load <titre>    : Charge une conversation précédemment sauvée.
+!help            : Affiche un résumé rapide des commandes.
+
+----------------------------------------------------------
+4. RÈGLES D'AFFICHAGE (IRC SAFE)
+----------------------------------------------------------
+* Le bot convertit automatiquement les formules mathématiques 
+  complexes (LaTeX) en texte lisible.
+* Tout formatage Markdown (gras, italique, titres) est 
+  automatiquement supprimé pour une lecture claire.
+* Les messages trop longs sont découpés en plusieurs morceaux
+  pour éviter d'être coupé par le serveur IRC.
+
+----------------------------------------------------------
+Admin : %ADMIN% | Modèle : gemini-2.5-flash
+==========================================================
