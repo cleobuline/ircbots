@@ -30,7 +30,7 @@ IRC_SYSTEM_PROMPT = (
 MODEL_CHAT  = "gemini-2.5-flash"
 MODEL_IMAGE = "imagen-4.0-generate-001"
 MODEL_VEO   = "veo-3.1-generate-preview"
-
+MODEL_MUSIC = "gemini-2.5-flash" # Utilisation du modèle multimodal polyvalent
 
 def sanitize_nick(nick: str) -> str:
     safe_base = re.sub(r'[^\w\-]', '_', nick)[:24]
@@ -115,17 +115,61 @@ class ZozoPlugin:
         text = self._latex.latex_to_text(text)
         text = re.sub(r'[\*\#\_]', '', text)
         return text.replace('\n', ' ').strip()
-
-    # ====================== TÂCHES ONE-SHOT ======================
-
+        
+    async def _task_music(self, target: str, nick: str, prompt: str):
+        """Génération de musique réelle via response_modalities"""
+        async with self._heavy_semaphore:
+            self.privmsg(target, f"{nick}: Composition musicale (Lyria 3) en cours... 🎹")
+            try:
+                # Utilisation de la configuration de la doc Google
+                resp = await self._gemini.aio.models.generate_content(
+                    model="lyria-3-pro-preview", # Ou gemini-2.5-flash selon tes accès
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        response_modalities=["AUDIO", "TEXT"],
+                    ),
+                )
+                
+                # En 2026, l'audio est dans l'une des parts de la réponse
+                audio_bytes = None
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        audio_bytes = part.inline_data.data
+                        break
+                
+                if audio_bytes:
+                    name = f"snd_{uuid.uuid4().hex[:10]}.mp3"
+                    with open(os.path.join(self.video_local_dir, name), "wb") as f:
+                        f.write(audio_bytes)
+                    
+                    url = f"{self.video_public_url.rstrip('/')}/{name}"
+                    self.privmsg(target, f"{nick}: ✅ Musique prête : {url}")
+                else:
+                    self.privmsg(target, f"{nick}: ❌ L'IA n'a pas généré de flux audio.")
+                    
+            except Exception as e:
+                logger.error(f"Music error: {e}")
+                self.privmsg(target, f"{nick}: ❌ Erreur : {e}")
+                
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
-        """Analyse d'image via Gemini (hors contexte chat)"""
+        """Analyse d'image ou de vidéo via Gemini"""
         try:
-            mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+            # Détermination du MIME type selon l'extension
+            if ext == "mp4":
+                mime = "video/mp4"
+            else:
+                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+
+            # Téléchargement temporaire pour envoi à l'API
+            import requests
+            resp_file = requests.get(url, timeout=15)
+            resp_file.raise_for_status()
+            
             parts = [
-                genai_types.Part(text=prompt or "Analyse cette image en français."),
-                genai_types.Part(file_data=genai_types.FileData(file_uri=url, mime_type=mime)),
+                genai_types.Part(text=prompt or "Analyse ce média en français."),
+                genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=resp_file.content)),
             ]
+            
             resp = await self._gemini.aio.models.generate_content(
                 model=MODEL_CHAT,
                 contents=[genai_types.Content(role="user", parts=parts)],
@@ -134,7 +178,7 @@ class ZozoPlugin:
             await self.send_chunks(target, f"{nick}: {self._clean(resp.text)}")
         except Exception as e:
             logger.error(f"Vision error: {e}")
-            self.privmsg(target, f"{nick}: Erreur vision.")
+            self.privmsg(target, f"{nick}: Erreur d'analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1"""
@@ -215,7 +259,7 @@ class ZozoPlugin:
 
         # --- Commandes spécifiques ---
         if cmd == "vision":
-            m = re.search(r'(https?://\S+\.(?P<ext>png|jpg|jpeg|webp))', args, re.I)
+            m = re.search(r'(https?://\S+\.(?P<ext>png|jpg|jpeg|webp|mp4))', args, re.I)
             if m:
                 url, ext = m.group(1), m.group('ext').lower()
                 asyncio.create_task(
@@ -238,7 +282,12 @@ class ZozoPlugin:
             else:
                 asyncio.create_task(self._task_video(target, nick, args))
             return
-
+        elif cmd == "music":
+            if not args:
+                self.privmsg(target, "Décris la musique que tu veux !")
+            else:
+                asyncio.create_task(self._task_music(target, nick, args))
+            return
         elif cmd == "raz":
             self.user_contexts[key] = []
             self.privmsg(target, f"{nick}: Mémoire effacée.")
