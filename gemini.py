@@ -7,7 +7,7 @@ import re
 import sys
 import uuid
 import hashlib
-import httpx  # Remplace import requests
+import httpx
 from typing import Dict, Tuple, List, Any
 from pylatexenc.latex2text import LatexNodes2Text
 
@@ -24,14 +24,14 @@ logger = logging.getLogger(__name__)
 
 IRC_SYSTEM_PROMPT = (
     "Tu es un assistant IA sur un serveur IRC. "
-    "Réponds de manière concise, texte brut uniquement, sans Markdown."
+    "Tu répond de façon chaleureuse aux usager."
 )
 
 # Modèles Gemini 2026
 MODEL_CHAT  = "gemini-2.5-flash"
 MODEL_IMAGE = "imagen-4.0-generate-001"
 MODEL_VEO   = "veo-3.1-generate-preview"
-MODEL_MUSIC = "gemini-2.5-flash" # Utilisation du modèle multimodal polyvalent
+MODEL_MUSIC = "gemini-2.0-flash-exp"
 
 def sanitize_nick(nick: str) -> str:
     safe_base = re.sub(r'[^\w\-]', '_', nick)[:24]
@@ -53,6 +53,7 @@ def _ctx_to_api(ctx: List[Dict[str, str]]) -> List[genai_types.Content]:
     ]
 
 
+        
 @irc3.plugin
 class ZozoPlugin:
     def __init__(self, bot):
@@ -62,8 +63,10 @@ class ZozoPlugin:
         self.gemini_api_key  = cfg.get("gemini_api_key")
         self.web_url_base    = cfg.get("display_url", "https://labynet.fr/images")
         self.video_public_url = cfg.get("video_public_url", "https://labynet.fr/videos")
+        self.audio_public_url = cfg.get("audio_public_url", "https://labynet.fr/videos")
         self.image_local_dir = cfg.get("image_local_dir", "/var/www/html/images")
         self.video_local_dir = cfg.get("video_local_dir", "/var/www/html/videos")
+        self.audio_local_dir = cfg.get("audio_local_dir", "/var/www/html/videos")
         self.max_num_line    = int(cfg.get("max_num_line", 20))
         self.flood_delay     = float(cfg.get("flood_delay", 0.5))
 
@@ -78,6 +81,7 @@ class ZozoPlugin:
 
         os.makedirs(self.image_local_dir, exist_ok=True)
         os.makedirs(self.video_local_dir, exist_ok=True)
+        os.makedirs(self.audio_local_dir, exist_ok=True)
         os.makedirs("conversations", exist_ok=True)
 
         logger.info("Zozo Gemini Turbo prêt.")
@@ -110,29 +114,51 @@ class ZozoPlugin:
                     self.privmsg(target, remaining[:cut].decode('utf-8', errors='ignore'))
                     remaining = remaining[cut:]
                     await asyncio.sleep(self.flood_delay)
-
+    def _extract_text(self, html: str) -> str:
+        """Nettoie le HTML pour ne garder que le texte utile"""
+        try:
+            # On essaie avec BeautifulSoup si installé
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            # On supprime le superflu pour ne pas polluer l'IA
+            for s in soup(["script", "style", "header", "footer", "nav", "aside", "form"]):
+                s.decompose()
+            text = soup.get_text(separator=' ')
+        except ImportError:
+            # Fallback si BeautifulSoup n'est pas là
+            text = re.sub(r'<(script|style|header|footer|nav|aside).*?>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
+            text = re.sub(r'<[^>]+>', ' ', text)
+        
+        # Nettoyage des espaces blancs et limitation de taille
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:12000]
     def _clean(self, text: str) -> str:
         """Triple nettoyage : LaTeX → Markdown → sauts de ligne"""
         text = self._latex.latex_to_text(text)
         text = re.sub(r'[\*\#\_]', '', text)
         return text.replace('\n', ' ').strip()
         
+        
     async def _task_music(self, target: str, nick: str, prompt: str):
-        """Génération de musique réelle via response_modalities"""
+        """Génération de musique réelle via Lyria 3 avec dossier dédié"""
         async with self._heavy_semaphore:
             self.privmsg(target, f"{nick}: Composition musicale (Lyria 3) en cours... 🎹")
             try:
-                # Utilisation de la configuration de la doc Google
                 resp = await self._gemini.aio.models.generate_content(
-                    model="lyria-3-pro-preview", # Ou gemini-2.5-flash selon tes accès
+                    model="lyria-3-pro-preview", 
                     contents=prompt,
                     config=genai_types.GenerateContentConfig(
                         response_modalities=["AUDIO", "TEXT"],
                     ),
                 )
                 
-                # En 2026, l'audio est dans l'une des parts de la réponse
+                # VERIFICATION : Si l'API ne renvoie pas de candidats (erreur ou blocage)
+                if not resp or not resp.candidates:
+                    self.privmsg(target, f"{nick}: ❌ L'API n'a renvoyé aucun résultat (possible filtrage ou erreur temporaire).")
+                    return
+
                 audio_bytes = None
+                # On parcourt les parts du premier candidat
                 for part in resp.candidates[0].content.parts:
                     if hasattr(part, 'inline_data') and part.inline_data:
                         audio_bytes = part.inline_data.data
@@ -140,55 +166,102 @@ class ZozoPlugin:
                 
                 if audio_bytes:
                     name = f"snd_{uuid.uuid4().hex[:10]}.mp3"
-                    with open(os.path.join(self.video_local_dir, name), "wb") as f:
+                    local_path = os.path.join(self.audio_local_dir, name)
+                    
+                    with open(local_path, "wb") as f:
                         f.write(audio_bytes)
                     
-                    url = f"{self.video_public_url.rstrip('/')}/{name}"
+                    url = f"{self.audio_public_url.rstrip('/')}/{name}"
                     self.privmsg(target, f"{nick}: ✅ Musique prête : {url}")
                 else:
-                    self.privmsg(target, f"{nick}: ❌ L'IA n'a pas généré de flux audio.")
+                    self.privmsg(target, f"{nick}: ❌ Aucun flux audio généré. Essaye d'être plus descriptif dans ton prompt.")
                     
             except Exception as e:
-                # On affiche l'erreur réelle dans IRC pour debugger
-                error_msg = str(e)[:100] # On limite la longueur pour IRC
-                logger.error(f"Music error details: {e}")
-                self.privmsg(target, f"{nick}: ❌ Erreur API : {error_msg}")
+                logger.error(f"Music generation error: {e}")
+                # Affiche une erreur plus propre sur IRC
+                self.privmsg(target, f"{nick}: ❌ Erreur technique : {type(e).__name__}")
+
                 
-    async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
-        """Analyse d'image/vidéo non-bloquante"""
-        async with self._heavy_semaphore:
-            self.privmsg(target, f"{nick}: 👁️ Analyse du média en cours...")
-            try:
-                # Téléchargement asynchrone avec httpx
-                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                    resp = await client.get(url)
-                    if resp.status_code != 200:
-                        self.privmsg(target, f"{nick}: ❌ Erreur téléchargement ({resp.status_code})")
-                        return
-                    file_data = resp.content
+    async def _task_url(self, target: str, nick: str, url: str, prompt: str):
+        """Explore une URL et l'analyse avec Gemini"""
+        self.privmsg(target, f"{nick}: Exploration de la page en cours... 🌐")
+        
+        if "pastebin.com" in url and "/raw/" not in url:
+            url = url.replace("pastebin.com/", "pastebin.com/raw/")
 
-                # Détermination du MIME type via l'argument 'ext'
-                ext_clean = ext.lower().strip('.')
-                if ext_clean == "mp4":
-                    mime = "video/mp4"
-                elif ext_clean in ["png", "webp", "gif"]:
-                    mime = f"image/{ext_clean}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers, verify=False) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                
+                # Correction ici : on s'assure que le nom correspond à la fonction définie plus bas
+                if "text/plain" in resp.headers.get("Content-Type", "") or "pastebin" in url:
+                    web_text = resp.text[:15000]
                 else:
-                    mime = "image/jpeg"
+                    web_text = self._extract_text(resp.text) # <--- LE "T" EST ICI
 
-                # Appel Gemini avec le binaire récupéré
-                resp_gemini = await self._gemini.aio.models.generate_content(
-                    model=MODEL_CHAT,
-                    contents=[
-                        genai_types.Part.from_bytes(data=file_data, mime_type=mime),
-                        prompt or "Analyse ce média en français."
-                    ],
-                    config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
-                )
-                await self.send_chunks(target, f"{nick}: {self._clean(resp_gemini.text)}")
-            except Exception as e:
-                logger.error(f"Vision error: {e}")
-                self.privmsg(target, f"{nick}: ❌ Erreur d'analyse média.")
+            if not web_text or len(web_text) < 10:
+                self.privmsg(target, f"{nick}: ❌ Contenu trop court ou illisible.")
+                return
+
+            instructions = (
+                f"Contenu de la page {url} :\n\n{web_text}\n\n"
+                f"Question de {nick} : {prompt if prompt else 'Fais un résumé court.'}"
+            )
+
+            key = (target, nick)
+            ctx = self.user_contexts.setdefault(key, [])
+            ctx.append({"role": "user", "text": instructions})
+
+            response = await self._gemini.aio.models.generate_content(
+                model=MODEL_CHAT,
+                contents=_ctx_to_api(ctx[-3:]),
+                config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
+            )
+            
+            answer = self._clean(response.text)
+            ctx.append({"role": "model", "text": answer})
+            await self.send_chunks(target, f"{nick}: {answer}")
+
+        except Exception as e:
+            logger.error(f"URL ERROR: {e}")
+            self.privmsg(target, f"{nick}: ❌ Erreur : {str(e)[:60]}")
+            
+            
+            
+            
+    async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
+        """Analyse d'image ou de vidéo via Gemini"""
+        try:
+            # Détermination du MIME type selon l'extension
+            if ext == "mp4":
+                mime = "video/mp4"
+            else:
+                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+
+            # Téléchargement temporaire pour envoi à l'API
+            import requests
+            resp_file = requests.get(url, timeout=15)
+            resp_file.raise_for_status()
+            
+            parts = [
+                genai_types.Part(text=prompt or "Analyse ce média en français."),
+                genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=resp_file.content)),
+            ]
+            
+            resp = await self._gemini.aio.models.generate_content(
+                model=MODEL_CHAT,
+                contents=[genai_types.Content(role="user", parts=parts)],
+                config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
+            )
+            await self.send_chunks(target, f"{nick}: {self._clean(resp.text)}")
+        except Exception as e:
+            logger.error(f"Vision error: {e}")
+            self.privmsg(target, f"{nick}: Erreur d'analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1"""
@@ -203,7 +276,7 @@ class ZozoPlugin:
                     None,
                     lambda: self._gemini.models.generate_videos(
                         model=MODEL_VEO,
-                        prompt=f"{prompt}, 5s, vertical 9:16 smartphone video",
+                        prompt=f"{prompt}, 4s, vertical 9:16  ",
                         config=genai_types.GenerateVideosConfig(
                             duration_seconds=4, aspect_ratio="9:16"
                         ),
@@ -285,7 +358,15 @@ class ZozoPlugin:
             else:
                 asyncio.create_task(self._task_image(target, nick, args))
             return
-
+        elif cmd == "url":
+            m = re.search(r'(https?://\S+)', args)
+            if m:
+                url = m.group(1)
+                user_query = args.replace(url, "").strip()
+                asyncio.create_task(self._task_url(target, nick, url, user_query))
+            else:
+                self.privmsg(target, f"{nick}: Il me faut une URL valide (http/https).")
+            return
         elif cmd == "video":
             if not args:
                 self.privmsg(target, "Prompt vide !")
@@ -403,6 +484,8 @@ def main():
         "video_public_url": cfg.get("video_public_url", "https://labynet.fr/videos"),
         "image_local_dir":  cfg.get("image_local_dir", "/var/www/html/images"),
         "video_local_dir":  cfg.get("video_local_dir", "/var/www/html/videos"),
+        "audio_local_dir":  cfg.get("audio_local_dir", "/var/www/html/audio"),
+        "audio_public_url": cfg.get("audio_public_url", "https://labynet.fr/audio"),
         "max_num_line":    cfg.get("max_num_line", 20),
         "flood_delay":     cfg.get("flood_delay", 0.5),
     })
