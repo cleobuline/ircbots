@@ -7,6 +7,7 @@ import re
 import sys
 import uuid
 import hashlib
+import httpx  # Remplace import requests
 from typing import Dict, Tuple, List, Any
 from pylatexenc.latex2text import LatexNodes2Text
 
@@ -148,37 +149,46 @@ class ZozoPlugin:
                     self.privmsg(target, f"{nick}: ❌ L'IA n'a pas généré de flux audio.")
                     
             except Exception as e:
-                logger.error(f"Music error: {e}")
-                self.privmsg(target, f"{nick}: ❌ Erreur : {e}")
+                # On affiche l'erreur réelle dans IRC pour debugger
+                error_msg = str(e)[:100] # On limite la longueur pour IRC
+                logger.error(f"Music error details: {e}")
+                self.privmsg(target, f"{nick}: ❌ Erreur API : {error_msg}")
                 
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
-        """Analyse d'image ou de vidéo via Gemini"""
-        try:
-            # Détermination du MIME type selon l'extension
-            if ext == "mp4":
-                mime = "video/mp4"
-            else:
-                mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
+        """Analyse d'image/vidéo non-bloquante"""
+        async with self._heavy_semaphore:
+            self.privmsg(target, f"{nick}: 👁️ Analyse du média en cours...")
+            try:
+                # Téléchargement asynchrone avec httpx
+                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        self.privmsg(target, f"{nick}: ❌ Erreur téléchargement ({resp.status_code})")
+                        return
+                    file_data = resp.content
 
-            # Téléchargement temporaire pour envoi à l'API
-            import requests
-            resp_file = requests.get(url, timeout=15)
-            resp_file.raise_for_status()
-            
-            parts = [
-                genai_types.Part(text=prompt or "Analyse ce média en français."),
-                genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=resp_file.content)),
-            ]
-            
-            resp = await self._gemini.aio.models.generate_content(
-                model=MODEL_CHAT,
-                contents=[genai_types.Content(role="user", parts=parts)],
-                config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
-            )
-            await self.send_chunks(target, f"{nick}: {self._clean(resp.text)}")
-        except Exception as e:
-            logger.error(f"Vision error: {e}")
-            self.privmsg(target, f"{nick}: Erreur d'analyse média.")
+                # Détermination du MIME type via l'argument 'ext'
+                ext_clean = ext.lower().strip('.')
+                if ext_clean == "mp4":
+                    mime = "video/mp4"
+                elif ext_clean in ["png", "webp", "gif"]:
+                    mime = f"image/{ext_clean}"
+                else:
+                    mime = "image/jpeg"
+
+                # Appel Gemini avec le binaire récupéré
+                resp_gemini = await self._gemini.aio.models.generate_content(
+                    model=MODEL_CHAT,
+                    contents=[
+                        genai_types.Part.from_bytes(data=file_data, mime_type=mime),
+                        prompt or "Analyse ce média en français."
+                    ],
+                    config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
+                )
+                await self.send_chunks(target, f"{nick}: {self._clean(resp_gemini.text)}")
+            except Exception as e:
+                logger.error(f"Vision error: {e}")
+                self.privmsg(target, f"{nick}: ❌ Erreur d'analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1"""
