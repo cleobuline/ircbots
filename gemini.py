@@ -63,10 +63,10 @@ class ZozoPlugin:
         self.gemini_api_key  = cfg.get("gemini_api_key")
         self.web_url_base    = cfg.get("display_url", "https://labynet.fr/images")
         self.video_public_url = cfg.get("video_public_url", "https://labynet.fr/videos")
-        self.audio_public_url = cfg.get("audio_public_url", "https://labynet.fr/videos")
+        self.audio_public_url = cfg.get("audio_public_url", "https://labynet.fr/audio")
+        self.audio_local_dir = cfg.get("audio_local_dir", "/var/www/html/audio")
         self.image_local_dir = cfg.get("image_local_dir", "/var/www/html/images")
         self.video_local_dir = cfg.get("video_local_dir", "/var/www/html/videos")
-        self.audio_local_dir = cfg.get("audio_local_dir", "/var/www/html/videos")
         self.max_num_line    = int(cfg.get("max_num_line", 20))
         self.flood_delay     = float(cfg.get("flood_delay", 0.5))
 
@@ -95,25 +95,34 @@ class ZozoPlugin:
         except Exception as e:
             logger.debug(f"privmsg échoué : {e}")
 
-    async def send_chunks(self, target: str, message: str):
-        """Envoi découpé UTF-8 safe pour IRC"""
-        MAX_BYTES = 392
-        for line in message.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-            remaining = line.encode('utf-8')
-            while remaining:
-                if len(remaining) <= MAX_BYTES:
-                    self.privmsg(target, remaining.decode('utf-8'))
-                    remaining = b''
-                else:
-                    cut = MAX_BYTES
-                    while cut > 0 and (remaining[cut] & 0xC0) == 0x80:
-                        cut -= 1
-                    self.privmsg(target, remaining[:cut].decode('utf-8', errors='ignore'))
-                    remaining = remaining[cut:]
-                    await asyncio.sleep(self.flood_delay)
+    async def send_chunks(self, target: str, text: str):
+        """Envoie le texte par morceaux en coupant proprement aux espaces"""
+        # On nettoie les sauts de ligne excessifs pour IRC
+        text = text.replace('\n', ' ').replace('\r', '')
+        limit = 400
+
+        while len(text) > 0:
+            if len(text) <= limit:
+                self.privmsg(target, text)
+                break
+            
+            # On cherche le dernier espace avant la limite
+            chunk_limit = text.rfind(' ', 0, limit)
+            
+            # Si on ne trouve pas d'espace (mot ultra long), on coupe à la limite
+            if chunk_limit <= 0:
+                chunk_limit = limit
+                
+            chunk = text[:chunk_limit].strip()
+            if chunk:
+                self.privmsg(target, chunk)
+            
+            # On reprend la suite du texte
+            text = text[chunk_limit:].strip()
+            
+            # Petit délai pour éviter le flood (0.5s par défaut dans ta config)
+            await asyncio.sleep(self.bot.config.get("flood_delay", 0.5))
+            
     def _extract_text(self, html: str) -> str:
         """Nettoie le HTML pour ne garder que le texte utile"""
         try:
@@ -235,22 +244,22 @@ class ZozoPlugin:
             
             
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
-        """Analyse d'image ou de vidéo via Gemini"""
+        """Analyse d'image ou de vidéo (Version asynchrone sécurisée)"""
         try:
-            # Détermination du MIME type selon l'extension
             if ext == "mp4":
                 mime = "video/mp4"
             else:
                 mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
 
-            # Téléchargement temporaire pour envoi à l'API
-            import requests
-            resp_file = requests.get(url, timeout=15)
-            resp_file.raise_for_status()
+            # Remplacement de requests par httpx (plus sûr pour un bot IRC)
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                resp_file = await client.get(url)
+                resp_file.raise_for_status()
+                file_data = resp_file.content
             
             parts = [
-                genai_types.Part(text=prompt or "Analyse ce média en français."),
-                genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=resp_file.content)),
+                genai_types.Part(text=prompt or "Décris ce média."),
+                genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=file_data)),
             ]
             
             resp = await self._gemini.aio.models.generate_content(
@@ -261,7 +270,7 @@ class ZozoPlugin:
             await self.send_chunks(target, f"{nick}: {self._clean(resp.text)}")
         except Exception as e:
             logger.error(f"Vision error: {e}")
-            self.privmsg(target, f"{nick}: Erreur d'analyse média.")
+            self.privmsg(target, f"{nick}: ❌ Erreur d'analyse média (vérifie l'URL).")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1"""
