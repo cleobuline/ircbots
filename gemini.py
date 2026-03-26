@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 IRC_SYSTEM_PROMPT = (
     "Tu es un assistant IA sur un serveur IRC. "
-    "Tu répond de façon chaleureuse aux usager."
+    "Tu répond de façon chaleureuse mais concise aux usagers."
 )
 
 # Modèles Gemini 2026
@@ -244,33 +244,41 @@ class ZozoPlugin:
             
             
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
-        """Analyse d'image ou de vidéo (Version asynchrone sécurisée)"""
+        """Analyse d'image ou de vidéo via Gemini (Version asynchrone sécurisée)"""
+        self.privmsg(target, f"{nick}: Analyse du média en cours... 🧐")
         try:
+            # Détermination du type MIME
             if ext == "mp4":
                 mime = "video/mp4"
             else:
                 mime = "image/jpeg" if ext in ["jpg", "jpeg"] else f"image/{ext}"
 
-            # Remplacement de requests par httpx (plus sûr pour un bot IRC)
+            # Utilisation de httpx (non-bloquant) au lieu de requests
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
                 resp_file = await client.get(url)
                 resp_file.raise_for_status()
                 file_data = resp_file.content
             
+            # Préparation des parties pour l'API
             parts = [
-                genai_types.Part(text=prompt or "Décris ce média."),
+                genai_types.Part(text=prompt or "Analyse ce média de façon détaillée en français."),
                 genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=file_data)),
             ]
             
+            # Appel à l'API Gemini
             resp = await self._gemini.aio.models.generate_content(
                 model=MODEL_CHAT,
                 contents=[genai_types.Content(role="user", parts=parts)],
                 config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
             )
-            await self.send_chunks(target, f"{nick}: {self._clean(resp.text)}")
+            
+            # Nettoyage et envoi par morceaux
+            answer = self._clean(resp.text)
+            await self.send_chunks(target, f"{nick}: {answer}")
+
         except Exception as e:
             logger.error(f"Vision error: {e}")
-            self.privmsg(target, f"{nick}: ❌ Erreur d'analyse média (vérifie l'URL).")
+            self.privmsg(target, f"{nick}: ❌ Erreur lors de l'analyse du média (URL inaccessible ou format non supporté).")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1"""
