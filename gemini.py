@@ -51,12 +51,12 @@ def sanitize_nick(nick: str) -> str:
 
 
 def sanitize_title(title: str) -> str:
-    """Sanitise le titre d'une sauvegarde pour éviter les injections de chemin."""
-    safe = re.sub(r'[^\w\-]', '_', title)[:32]
+    """Sanitise le titre en autorisant les points pour la compatibilité."""
+    # On ajoute \. dans la regex pour ne pas transformer les points en underscores
+    safe = re.sub(r'[^\w\-\.]', '_', title)[:32]
     if not safe:
         safe = "default"
     return safe
-
 
 def _ctx_to_api(ctx: List[Dict[str, str]]) -> List[genai_types.Content]:
     """
@@ -142,7 +142,7 @@ class ZozoPlugin:
         except Exception as e:
             logger.debug(f"privmsg échoué : {e}")
 
-    async def send_chunks(self, target: str, text: str):
+    async def send_chunks_old(self, target: str, text: str):
         """Envoie le texte par morceaux en coupant proprement aux espaces."""
         text = text.replace('\n', ' ').replace('\r', '')
         limit = 400
@@ -162,7 +162,33 @@ class ZozoPlugin:
 
             text = text[chunk_limit:].strip()
             await asyncio.sleep(self.flood_delay)
+    async def send_chunks(self, target: str, text: str):
+        """Envoie le texte ligne par ligne, avec découpage si nécessaire."""
+        # On traite chaque ligne de la réponse séparément
+        for line in text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            
+            limit = 400
+            while line:
+                if len(line) <= limit:
+                    self.privmsg(target, line)
+                    break
 
+                chunk_limit = line.rfind(' ', 0, limit)
+                if chunk_limit <= 0:
+                    chunk_limit = limit
+
+                chunk = line[:chunk_limit].strip()
+                if chunk:
+                    self.privmsg(target, chunk)
+
+                line = line[chunk_limit:].strip()
+                await asyncio.sleep(self.flood_delay)
+            
+            # Petit délai entre les lignes pour la stabilité IRC
+            await asyncio.sleep(self.flood_delay)
     def _extract_text(self, html: str) -> str:
         """Nettoie le HTML pour ne garder que le texte utile."""
         try:
@@ -182,31 +208,45 @@ class ZozoPlugin:
         return text[:12000]
 
     def _clean(self, text: str) -> str:
-        """Nettoyage pour IRC : LaTeX → Markdown → mise à plat."""
-        # 1. Conversion LaTeX
-        text = self._latex.latex_to_text(text)
-        # 2. Blocs de code multilignes (```...```) → on garde juste le contenu
+        """Nettoyage haute précision pour IRC : préserve la structure verticale."""
+        # 1. Harmonisation des guillemets et apostrophes "intelligents"
+        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        
+        # 2. Suppression des blocs de code Markdown (```...```) avant le LaTeX
         text = re.sub(r'```[\w]*\n?(.*?)```', r'\1', text, flags=re.DOTALL)
-        # 3. Code inline `commande` → «commande»
+        
+        # 3. Conversion LaTeX vers texte
+        try:
+            text = self._latex.latex_to_text(text)
+        except Exception:
+            pass
+            
+        # 4. Code inline `commande` → «commande»
         text = re.sub(r'`([^`]+)`', r'«\1»', text)
-        # 4. Gras/italique ***x***, **x**, *x* → x
+        
+        # 5. Suppression du gras et de l'italique (*, **, ***)
         text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
-        # 5. Marqueurs * et ** orphelins résiduels
         text = re.sub(r'\*+', '', text)
-        # 6. Titres # ## ### → on supprime juste le symbole
+        
+        # 6. Suppression des symboles de titres (#)
         text = re.sub(r'^\s*#{1,6}\s+', '', text, flags=re.MULTILINE)
-        # 7. Souligné __x__ ou _x_ → x
+        
+        # 7. Suppression des soulignés (__ ou _)
         text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
-        # 8. Liens Markdown [texte](url) → texte (url)
+        
+        # 8. Conversion des liens Markdown [texte](url) → texte (url)
         text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\1 (\2)', text)
-        # 9. Listes à puces/numérotées → tiret simple
+        
+        # 9. Harmonisation des listes (tiret simple)
         text = re.sub(r'^\s*[-*+]\s+', '- ', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\d+\.\s+', '- ', text, flags=re.MULTILINE)
-        # 10. Sauts de ligne multiples → séparateur IRC
-        text = re.sub(r'\n{2,}', ' | ', text)
-        text = text.replace('\n', ' ')
-        # 11. Espaces multiples résiduels
-        text = re.sub(r' {2,}', ' ', text)
+        
+        # 10. Nettoyage des retours chariot et espaces inutiles
+        text = text.replace('\r', '')
+        
+        # 11. On réduit les espaces multiples (sans toucher aux sauts de ligne)
+        text = re.sub(r'[ \t]{2,}', ' ', text)
+        
         return text.strip()
 
     # ====================== TÂCHES ASYNC ======================
@@ -552,7 +592,27 @@ class ZozoPlugin:
             else:
                 self.privmsg(target, f"{nick}: Fichier inconnu (titre : {safe_title}).")
             return
-
+        elif cmd == "delete":
+            if not args:
+                self.privmsg(target, f"{nick}: Titre requis pour la suppression.")
+                return
+            
+            # Utilisation de la sanitisation pour la sécurité
+            safe_title = sanitize_title(args)
+            prefix = sanitize_nick(nick)
+            path = os.path.join("conversations", f"{prefix}.{safe_title}.json")
+            
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    logger.info(f"Fichier supprimé par {nick} : {path}")
+                    self.privmsg(target, f"{nick}: 🗑️ Sauvegarde « {safe_title} » supprimée.")
+                except Exception as e:
+                    logger.error(f"Delete error for {nick}: {e}")
+                    self.privmsg(target, f"{nick}: ❌ Erreur technique lors de la suppression.")
+            else:
+                self.privmsg(target, f"{nick}: Aucun fichier trouvé avec le titre « {safe_title} ».")
+            return
         elif cmd == "list":
             # Nouvelle commande : liste les sauvegardes du nick
             prefix = sanitize_nick(nick)
