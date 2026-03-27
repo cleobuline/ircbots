@@ -23,10 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-IRC_SYSTEM_PROMPT = (
-    "Tu es un assistant IA sur un serveur IRC. "
-    "Tu réponds de façon chaleureuse mais concise aux usagers."
-)
+IRC_SYSTEM_PROMPT = """Tu es un assistant IA chaleureux et concis sur un serveur IRC. 
+RÈGLE ABSOLUE : Réponds TOUJOURS dans la langue utilisée par l'utilisateur dans son dernier message. 
+Si on te parle en anglais, réponds en anglais. Si on te parle en français, réponds en français. 
+Garde un ton amical, aide les usagers, mais ne dépasse jamais 10 lignes de texte. 
+Tu es expert en technologie, multimédia (image, vidéo, musique) et stochanalyse."""
 
 # Modèles Gemini
 MODEL_CHAT  = "gemini-2.5-flash"
@@ -292,11 +293,11 @@ class ZozoPlugin:
                 self.privmsg(target, f"{nick}: ❌ Erreur technique : {type(e).__name__}")
 
     async def _task_url(self, target: str, nick: str, url: str, prompt: str):
-        """Explore une URL et l'analyse avec Gemini. Protégée par semaphore."""
+        """Analyse d'URL - ONE-SHOT (indépendante du contexte chat)"""
         async with self._heavy_semaphore:
             self.privmsg(target, f"{nick}: Exploration de la page en cours... 🌐")
 
-            # Réécriture Pastebin vers raw
+            # Réécriture automatique Pastebin vers raw
             if "pastebin.com" in url and "/raw/" not in url:
                 url = url.replace("pastebin.com/", "pastebin.com/raw/")
 
@@ -308,9 +309,10 @@ class ZozoPlugin:
             }
 
             try:
-                # FIX: verify=True (SSL activé), limite de taille en streaming
                 async with httpx.AsyncClient(
-                    timeout=20.0, follow_redirects=True, headers=headers
+                    timeout=25.0, 
+                    follow_redirects=True, 
+                    headers=headers
                 ) as client:
                     async with client.stream("GET", url) as response:
                         response.raise_for_status()
@@ -324,6 +326,7 @@ class ZozoPlugin:
                             chunks.append(chunk)
                         raw = b"".join(chunks).decode("utf-8", errors="replace")
 
+                # Détection du type de contenu
                 content_type = response.headers.get("Content-Type", "")
                 if "text/plain" in content_type or "pastebin" in url:
                     web_text = raw[:15000]
@@ -334,32 +337,36 @@ class ZozoPlugin:
                     self.privmsg(target, f"{nick}: ❌ Contenu trop court ou illisible.")
                     return
 
+                user_query = prompt.strip() if prompt else "Fais un résumé clair et concis de cette page en français."
+
                 instructions = (
-                    f"Contenu de la page {url} :\n\n{web_text}\n\n"
-                    f"Question de {nick} : {prompt if prompt else 'Fais un résumé court.'}"
+                    f"URL analysée : {url}\n\n"
+                    f"Contenu de la page :\n{web_text}\n\n"
+                    f"Question : {user_query}"
                 )
 
-                key = (target, nick)
-                ctx = self.user_contexts.setdefault(key, [])
-                ctx.append({"role": "user", "text": instructions})
-
-                response_ai = await self._gemini.aio.models.generate_content(
+                # === ONE-SHOT : on n'utilise PAS le contexte utilisateur ===
+                resp = await self._gemini.aio.models.generate_content(
                     model=MODEL_CHAT,
-                    contents=_ctx_to_api(ctx[-3:]),
-                    config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT),
+                    contents=[genai_types.Content(
+                        role="user", 
+                        parts=[genai_types.Part(text=instructions)]
+                    )],
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=IRC_SYSTEM_PROMPT
+                    ),
                 )
 
-                answer = self._clean(response_ai.text or "")
-                ctx.append({"role": "model", "text": answer})
+                answer = self._clean(resp.text or "")
                 await self.send_chunks(target, f"{nick}: {answer}")
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"URL HTTP error {e.response.status_code}: {url}")
-                self.privmsg(target, f"{nick}: ❌ Erreur HTTP {e.response.status_code}.")
+                logger.error(f"URL HTTP {e.response.status_code}: {url}")
+                self.privmsg(target, f"{nick}: ❌ Erreur HTTP {e.response.status_code} sur la page.")
             except Exception as e:
                 logger.error(f"URL error: {e}")
-                self.privmsg(target, f"{nick}: ❌ Erreur : {str(e)[:60]}")
-
+                self.privmsg(target, f"{nick}: ❌ Erreur lors de l'analyse de l'URL.")
+                
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
         """Analyse d'image ou de vidéo via Gemini avec limite de taille."""
         self.privmsg(target, f"{nick}: Analyse du média en cours... 🧐")
@@ -400,7 +407,7 @@ class ZozoPlugin:
         except Exception as e:
             logger.error(f"Vision error: {e}")
             self.privmsg(target, f"{nick}: ❌ Erreur analyse média (URL inaccessible ou format non supporté).")
-
+                
     async def _task_video(self, target: str, nick: str, prompt: str):
         """Génération vidéo avec Veo 3.1."""
         async with self._heavy_semaphore:
