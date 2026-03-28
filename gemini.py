@@ -303,13 +303,18 @@ class ZozoPlugin:
             if "pastebin.com" in url and "/raw/" not in url:
                 url = url.replace("pastebin.com/", "pastebin.com/raw/")
 
+           # headers = {
+           #     "User-Agent": (
+           #         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+           #         "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+           #     )
+           # }
             headers = {
                 "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    "geminiAI/3.1 (IRC Bot; Labynet Network; +https://labynet.fr) "
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
                 )
-            }
-
+            }                    
             try:
                 async with httpx.AsyncClient(
                     timeout=25.0, 
