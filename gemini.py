@@ -26,11 +26,14 @@ logger = logging.getLogger(__name__)
 IRC_SYSTEM_PROMPT = """Tu es un assistant IA chaleureux et concis sur un serveur IRC. 
 RÈGLE ABSOLUE : Réponds TOUJOURS dans la langue utilisée par l'utilisateur dans son dernier message. 
 Si on te parle en anglais, réponds en anglais. Si on te parle en français, réponds en français. 
-Garde un ton amical, aide les usagers, mais ne dépasse jamais 10 lignes de texte. 
-Tu es expert en technologie, multimédia (image, vidéo, musique) et stochanalyse."""
+Tu es un assistant scientifique de haute précision. Ta priorité absolue est l'exactitude syntaxique.
+Lorsque tu écris des fractions en ligne, utilise TOUJOURS des parenthèses pour le numérateur et le dénominateur complets.
+Ne saute jamais d'étape de calcul dans les démonstrations. Développe toujours l'algèbre de l'étape n+1. 
+Utilise des parenthèses claires pour les fractions et évite le gras."""
 
 # Modèles Gemini
-MODEL_CHAT  = "gemini-2.5-flash"
+#MODEL_CHAT  = "gemini-2.5-flash"
+MODEL_CHAT  = "gemini-3.1-pro-preview"
 MODEL_IMAGE = "imagen-4.0-generate-001"
 MODEL_VEO   = "veo-3.1-generate-preview"
 MODEL_MUSIC = "lyria-3-pro-preview"
@@ -297,7 +300,6 @@ class ZozoPlugin:
         async with self._heavy_semaphore:
             self.privmsg(target, f"{nick}: Exploration de la page en cours... 🌐")
 
-            # Réécriture automatique Pastebin vers raw
             if "pastebin.com" in url and "/raw/" not in url:
                 url = url.replace("pastebin.com/", "pastebin.com/raw/")
 
@@ -316,6 +318,8 @@ class ZozoPlugin:
                 ) as client:
                     async with client.stream("GET", url) as response:
                         response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "")  # Récupéré avant streaming
+
                         chunks = []
                         total = 0
                         async for chunk in response.aiter_bytes(chunk_size=8192):
@@ -326,8 +330,6 @@ class ZozoPlugin:
                             chunks.append(chunk)
                         raw = b"".join(chunks).decode("utf-8", errors="replace")
 
-                # Détection du type de contenu
-                content_type = response.headers.get("Content-Type", "")
                 if "text/plain" in content_type or "pastebin" in url:
                     web_text = raw[:15000]
                 else:
@@ -345,7 +347,6 @@ class ZozoPlugin:
                     f"Question : {user_query}"
                 )
 
-                # === ONE-SHOT : on n'utilise PAS le contexte utilisateur ===
                 resp = await self._gemini.aio.models.generate_content(
                     model=MODEL_CHAT,
                     contents=[genai_types.Content(
@@ -367,6 +368,9 @@ class ZozoPlugin:
                 logger.error(f"URL error: {e}")
                 self.privmsg(target, f"{nick}: ❌ Erreur lors de l'analyse de l'URL.")
                 
+                
+                
+                                
     async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
         """Analyse d'image ou de vidéo via Gemini avec limite de taille."""
         self.privmsg(target, f"{nick}: Analyse du média en cours... 🧐")
@@ -409,53 +413,59 @@ class ZozoPlugin:
             self.privmsg(target, f"{nick}: ❌ Erreur analyse média (URL inaccessible ou format non supporté).")
                 
     async def _task_video(self, target: str, nick: str, prompt: str):
-        """Génération vidéo avec Veo 3.1."""
+        """Génération vidéo avec Veo 3.1"""
         async with self._heavy_semaphore:
-            self.privmsg(target, f"{nick}: Génération vidéo Veo en cours... ⏳")
+            self.privmsg(target, f"{nick}: Génération vidéo Veo en cours... ⏳ (cela peut prendre 30 à 90 secondes)")
             t0 = time.monotonic()
-            try:
-                loop = asyncio.get_running_loop()
 
-                op_name = await loop.run_in_executor(
-                    None,
-                    lambda: self._gemini.models.generate_videos(
-                        model=MODEL_VEO,
-                        prompt=f"{prompt}, 4s, vertical 9:16",
-                        config=genai_types.GenerateVideosConfig(
-                            duration_seconds=4, aspect_ratio="9:16"
-                        ),
-                    )
+            try:
+                # Lancement de la génération vidéo
+                operation = self._gemini.models.generate_videos(
+                    model=MODEL_VEO,
+                    prompt=f"{prompt}, 4 secondes, format vertical 9:16, animation fluide et réaliste",
+                    config=genai_types.GenerateVideosConfig(
+                        duration_seconds=4,
+                        aspect_ratio="9:16"
+                    ),
                 )
 
-                # Polling avec gestion d'erreur transiente
-                deadline = loop.time() + 600
-                while True:
-                    if loop.time() > deadline:
-                        self.privmsg(target, f"{nick}: ❌ Timeout Veo (10 min).")
+                # Polling jusqu'à ce que l'opération soit terminée
+                while not operation.done:
+                    if time.monotonic() - t0 > 600:   # Timeout de 10 minutes
+                        self.privmsg(target, f"{nick}: ❌ Timeout Veo (10 minutes).")
                         return
-                    await asyncio.sleep(15)
-                    try:
-                        operation = await loop.run_in_executor(
-                            None, lambda: self._gemini.operations.get(op_name)
-                        )
-                    except Exception as poll_err:
-                        logger.warning(f"Polling transitoire ignoré : {poll_err}")
-                        continue
-                    if operation.done:
-                        break
 
+                    await asyncio.sleep(12)
+                    operation = self._gemini.operations.get(operation)   # ← Ici on passe l'objet complet
+
+                # Vérification d'erreur
+                if operation.error:
+                    self.privmsg(target, f"{nick}: ❌ Erreur Veo : {operation.error.message}")
+                    return
+
+                # Récupération et téléchargement de la vidéo
                 video_obj = operation.response.generated_videos[0].video
                 vid_bytes = await self._gemini.aio.files.download(file=video_obj)
+
+                # Sauvegarde locale
                 name = f"vid_{uuid.uuid4().hex[:12]}.mp4"
-                with open(os.path.join(self.video_local_dir, name), "wb") as f:
+                local_path = os.path.join(self.video_local_dir, name)
+                
+                with open(local_path, "wb") as f:
                     f.write(vid_bytes)
+
                 elapsed = time.monotonic() - t0
-                logger.info(f"Vidéo générée en {elapsed:.1f}s → {name}")
-                self.privmsg(target, f"{nick}: ✅ {self.video_public_url.rstrip('/')}/{name}")
+                url = f"{self.video_public_url.rstrip('/')}/{name}"
+                
+                logger.info(f"Vidéo générée en {elapsed:.1f}s pour {nick} → {name}")
+                self.privmsg(target, f"{nick}: ✅ {url}")
 
             except Exception as e:
-                logger.error(f"Video error: {e}")
-                self.privmsg(target, f"{nick}: ❌ Erreur vidéo : {type(e).__name__}")
+                logger.error(f"Video error for {nick}: {e}", exc_info=True)
+                self.privmsg(target, f"{nick}: ❌ Erreur lors de la génération vidéo.")
+                
+                
+                
 
     async def _task_image(self, target: str, nick: str, prompt: str):
         """Génération d'image avec Imagen 4."""
@@ -651,7 +661,7 @@ class ZozoPlugin:
             ctx = self.user_contexts.setdefault(key, [])
 
             # Suggestion d'utiliser vision si l'utilisateur colle une image dans le chat
-            if re.search(r'https?://\S+\.(png|jpg|jpeg|webp)', cmd_raw, re.I):
+            if re.search(r'https?://\S+\.(png|jpg|jpeg|webp|mp4)', cmd_raw, re.I):
                 self.privmsg(target, f"{nick}: Utilise la commande 'vision' pour analyser des images.")
                 return
 
@@ -695,7 +705,7 @@ class ZozoPlugin:
 # ====================== POINT D'ENTRÉE ======================
 
 def main():
-    config_file = sys.argv[1] if len(sys.argv) > 1 else "zozo-gemini.json"
+    config_file = sys.argv[1] if len(sys.argv) > 1 else "gemini-libera.json"
 
     try:
         with open(config_file, "r", encoding="utf-8") as f:
