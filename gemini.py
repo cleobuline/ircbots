@@ -27,13 +27,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-IRC_SYSTEM_PROMPT = "Tu es un assistant IA concis sur IRC. Réponds toujours dans la langue de l'usager. Sois précis et scientifique."
+IRC_SYSTEM_PROMPT = (
+    "Tu es un assistant IA sur un serveur IRC. "
+    "Tu réponds dans la langue de l'usager de façon chaleureuse mais concise."
+)
 
-MODEL_CHAT  = "gemini-2.5-flash"
+# Modèles Gemini
+MODEL_CHAT = "gemini-2.5-flash"
+# MODEL_CHAT  = "gemini-3.1-pro-preview"
 MODEL_IMAGE = "imagen-4.0-generate-001"
 MODEL_VEO   = "veo-3.1-generate-preview"
 MODEL_MUSIC = "lyria-3-pro-preview"
 
+# Limites de sécurité
 MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 MAX_CONTEXT_KEYS   = 500
 RATE_LIMIT_SECONDS = 3.0
@@ -44,7 +50,7 @@ RE_MARKDOWN_BOLD = re.compile(r'\*{1,3}(.*?)\*{1,3}')
 RE_MARKDOWN_TITLES = re.compile(r'#{1,6}\s*')
 RE_MARKDOWN_UNDERLINE = re.compile(r'_{1,2}(.*?)_{1,2}')
 RE_MARKDOWN_CODE = re.compile(r'`{1,3}.*?`{1,3}', re.DOTALL)
-RE_HTML_CLEAN = re.compile(r'<(script|style|header|footer|nav|aside).*?>.*?</\1>', re.DOTALL | re.IGNORECASE)
+RE_HTML_CLEAN = re.compile(r'<(script|style|header|footer|nav|aside|form).*?>.*?</\1>', re.DOTALL | re.IGNORECASE)
 RE_HTML_TAGS = re.compile(r'<[^>]+>')
 RE_WHITESPACE = re.compile(r'\s+')
 
@@ -68,11 +74,11 @@ def sanitize_nick(nick: str) -> str:
     safe_base = re.sub(r'[^\w\-]', '_', nick)[:24]
     nick_hash = hashlib.md5(nick.encode('utf-8')).hexdigest()[:4]
     return f"{safe_base}_{nick_hash}"
-
+ 
 def sanitize_title(title: str) -> str:
-    safe = re.sub(r'[^\w\-]', '_', title)[:32]
+    # On ajoute \. à l'intérieur des crochets pour autoriser les points
+    safe = re.sub(r'[^\w\-\.]', '_', title)[:32]
     return safe if safe else "default"
-
 def _ctx_to_api(ctx: List[Dict[str, str]]) -> List[genai_types.Content]:
     return [
         genai_types.Content(role=msg["role"], parts=[genai_types.Part(text=msg["text"])])
@@ -110,20 +116,20 @@ class ZozoPlugin:
         for d in [self.image_local_dir, self.video_local_dir, self.audio_local_dir, "conversations"]:
             os.makedirs(d, exist_ok=True)
 
-        logger.info("Zozo Gemini (Optimisé) prêt.")
+        logger.info("Zozo Gemini (Version Complète Optimisée) prêt.")
+
+    # ====================== HELPERS ======================
 
     def _get_context_lock(self, key: Tuple[str, str]) -> asyncio.Lock:
         return self._context_locks.setdefault(key, asyncio.Lock())
 
     def _access_context(self, key: Tuple[str, str]) -> List[Dict[str, str]]:
-        """Récupère le contexte en mode LRU (Least Recently Used)."""
         if key in self.user_contexts:
             self.user_contexts.move_to_end(key)
         else:
             if len(self.user_contexts) >= MAX_CONTEXT_KEYS:
                 old_key, _ = self.user_contexts.popitem(last=False)
                 self._context_locks.pop(old_key, None)
-                logger.info(f"Purge LRU : {old_key} supprimé.")
             self.user_contexts[key] = []
         return self.user_contexts[key]
 
@@ -135,21 +141,28 @@ class ZozoPlugin:
         self._last_request[nick] = now
         return True
 
+    def privmsg(self, target: str, text: str):
+        self.bot.privmsg(target, str(text)[:400])
+
     async def send_chunks(self, target: str, text: str):
         text = text.replace('\n', ' ').replace('\r', '')
         limit = 400
         while text:
             if len(text) <= limit:
-                self.bot.privmsg(target, text)
+                self.privmsg(target, text)
                 break
             chunk_limit = text.rfind(' ', 0, limit)
             if chunk_limit <= 0: chunk_limit = limit
-            self.bot.privmsg(target, text[:chunk_limit].strip())
+            self.privmsg(target, text[:chunk_limit].strip())
             text = text[chunk_limit:].strip()
             await asyncio.sleep(self.flood_delay)
 
+    def _extract_text(self, html: str) -> str:
+        text = RE_HTML_CLEAN.sub('', html)
+        text = RE_HTML_TAGS.sub(' ', text)
+        return RE_WHITESPACE.sub(' ', text).strip()[:12000]
+
     def _clean(self, text: str) -> str:
-        """Nettoyage optimisé via Regex pré-compilées."""
         if not text: return ""
         text = self._latex.latex_to_text(text)
         text = RE_MARKDOWN_BOLD.sub(r'\1', text)
@@ -158,169 +171,212 @@ class ZozoPlugin:
         text = RE_MARKDOWN_CODE.sub('', text)
         return text.replace('\n', ' ').strip()
 
-    def _extract_text(self, html: str) -> str:
-        text = RE_HTML_CLEAN.sub('', html)
-        text = RE_HTML_TAGS.sub(' ', text)
-        return RE_WHITESPACE.sub(' ', text).strip()[:12000]
-
     # ====================== TÂCHES ASYNC ======================
 
     async def _task_music(self, target: str, nick: str, prompt: str):
         async with self._heavy_semaphore:
-            self.bot.privmsg(target, f"{nick}: Composition musicale en cours... 🎹")
+            self.privmsg(target, f"{nick}: Composition musicale (Lyria 3) en cours... 🎹")
             try:
                 resp = await self._gemini.aio.models.generate_content(
-                    model=MODEL_MUSIC,
-                    contents=prompt,
+                    model=MODEL_MUSIC, contents=prompt,
                     config=genai_types.GenerateContentConfig(response_modalities=["AUDIO", "TEXT"]),
                 )
-                audio_bytes = None
-                for part in resp.candidates[0].content.parts:
-                    if hasattr(part, 'inline_data') and part.inline_data:
-                        audio_bytes = part.inline_data.data
-                        break
+                audio_bytes = next((p.inline_data.data for p in resp.candidates[0].content.parts if hasattr(p, 'inline_data') and p.inline_data), None)
                 if audio_bytes:
                     name = f"snd_{uuid.uuid4().hex[:10]}.mp3"
                     await save_file_async(os.path.join(self.audio_local_dir, name), audio_bytes)
-                    self.bot.privmsg(target, f"{nick}: ✅ {self.audio_public_url.rstrip('/')}/{name}")
+                    self.privmsg(target, f"{nick}: ✅ {self.audio_public_url.rstrip('/')}/{name}")
                 else:
-                    self.bot.privmsg(target, f"{nick}: ❌ Aucun audio généré.")
+                    self.privmsg(target, f"{nick}: ❌ Aucun flux audio généré.")
             except Exception as e:
-                self.bot.privmsg(target, f"{nick}: ❌ Erreur : {type(e).__name__}")
+                self.privmsg(target, f"{nick}: ❌ Erreur technique : {type(e).__name__}")
+
+    async def _task_url(self, target: str, nick: str, url: str, prompt: str):
+        async with self._heavy_semaphore:
+            self.privmsg(target, f"{nick}: Exploration de la page... 🌐")
+            if "pastebin.com" in url and "/raw/" not in url: url = url.replace("pastebin.com/", "pastebin.com/raw/")
+            try:
+                async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                    async with client.stream("GET", url) as response:
+                        response.raise_for_status()
+                        chunks, total = [], 0
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            total += len(chunk)
+                            if total > MAX_DOWNLOAD_BYTES:
+                                self.privmsg(target, f"{nick}: ❌ Page trop lourde."); return
+                            chunks.append(chunk)
+                        raw = b"".join(chunks).decode("utf-8", errors="replace")
+
+                web_text = raw[:15000] if "text/plain" in response.headers.get("Content-Type", "") or "pastebin" in url else self._extract_text(raw)
+                if len(web_text) < 10: self.privmsg(target, f"{nick}: ❌ Contenu illisible."); return
+
+                ctx = self._access_context((target, nick))
+                ctx.append({"role": "user", "text": f"Contenu de {url} :\n{web_text}\n\nQuestion : {prompt or 'Résumé court.'}"})
+                resp = await self._gemini.aio.models.generate_content(model=MODEL_CHAT, contents=_ctx_to_api(ctx[-3:]), config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT))
+                answer = self._clean(resp.text or "")
+                ctx.append({"role": "model", "text": answer})
+                await self.send_chunks(target, f"{nick}: {answer}")
+            except Exception as e:
+                self.privmsg(target, f"{nick}: ❌ Erreur URL : {str(e)[:50]}")
+
+    async def _task_vision(self, target: str, nick: str, url: str, prompt: str, ext: str):
+        self.privmsg(target, f"{nick}: Analyse média en cours... 🧐")
+        try:
+            mime = "video/mp4" if ext == "mp4" else f"image/{ext}".replace("jpg", "jpeg")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                async with client.stream("GET", url) as resp_file:
+                    resp_file.raise_for_status()
+                    chunks, total = [], 0
+                    async for chunk in resp_file.aiter_bytes(chunk_size=8192):
+                        total += len(chunk)
+                        if total > MAX_DOWNLOAD_BYTES: self.privmsg(target, f"{nick}: ❌ Trop lourd."); return
+                        chunks.append(chunk)
+            
+            resp = await self._gemini.aio.models.generate_content(
+                model=MODEL_CHAT,
+                contents=[genai_types.Content(role="user", parts=[
+                    genai_types.Part(text=prompt or "Analyse détaillée."),
+                    genai_types.Part(inline_data=genai_types.Blob(mime_type=mime, data=b"".join(chunks)))
+                ])],
+                config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT)
+            )
+            await self.send_chunks(target, f"{nick}: {self._clean(resp.text or '')}")
+        except Exception:
+            self.privmsg(target, f"{nick}: ❌ Erreur analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
         async with self._heavy_semaphore:
-            self.bot.privmsg(target, f"{nick}: Génération vidéo Veo... ⏳")
+            self.privmsg(target, f"{nick}: Génération vidéo Veo... ⏳")
             try:
                 operation = await self._gemini.aio.models.generate_videos(
-                    model=MODEL_VEO,
-                    prompt=prompt,
+                    model=MODEL_VEO, prompt=f"{prompt}, 4s, vertical 9:16",
                     config=genai_types.GenerateVideosConfig(duration_seconds=4, aspect_ratio="9:16"),
                 )
-                
-                # Polling
                 while not operation.done:
                     await asyncio.sleep(15)
                     operation = await self._gemini.aio.operations.get(operation)
 
-                if operation.error:
-                    # Ici l'erreur de sécurité apparaîtra souvent en clair
-                    err = getattr(operation.error, 'message', str(operation.error))
-                    self.bot.privmsg(target, f"{nick}: ❌ Erreur Veo : {err}")
-                    return
+                if operation.error or not operation.response.generated_videos:
+                    err = getattr(operation.error, 'message', "Filtre de sécurité")
+                    self.privmsg(target, f"{nick}: ❌ Erreur : {err}"); return
 
-                # VERIFICATION CRUCIALE
-                if not operation.response or not operation.response.generated_videos:
-                    self.bot.privmsg(target, f"{nick}: ❌ Vidéo bloquée (Filtre de sécurité). 🛡️")
-                    return
-
-                video_obj = operation.response.generated_videos[0].video
-                vid_bytes = await self._gemini.aio.files.download(file=video_obj)
-                
+                vid_bytes = await self._gemini.aio.files.download(file=operation.response.generated_videos[0].video)
                 name = f"vid_{uuid.uuid4().hex[:12]}.mp4"
                 await save_file_async(os.path.join(self.video_local_dir, name), vid_bytes)
-                self.bot.privmsg(target, f"{nick}: ✅ {self.video_public_url.rstrip('/')}/{name}")
-
+                self.privmsg(target, f"{nick}: ✅ {self.video_public_url.rstrip('/')}/{name}")
             except Exception as e:
-                self.bot.privmsg(target, f"{nick}: ❌ Erreur technique vidéo.")
+                self.privmsg(target, f"{nick}: ❌ Erreur : {type(e).__name__}")
 
     async def _task_image(self, target: str, nick: str, prompt: str):
         async with self._heavy_semaphore:
-            self.bot.privmsg(target, f"{nick}: Génération d'image... 🎨")
+            self.privmsg(target, f"{nick}: Génération d'image... 🎨")
             try:
-                resp = await self._gemini.aio.models.generate_images(
-                    model=MODEL_IMAGE, 
-                    prompt=prompt, 
-                    config=genai_types.GenerateImagesConfig(number_of_images=1)
-                )
-
-                # VERIFICATION : Est-ce qu'on a bien reçu une image ?
-                if not resp or not hasattr(resp, 'generated_images') or not resp.generated_images:
-                    # Si c'est vide, c'est presque toujours le filtre de sécurité (Safety)
-                    self.bot.privmsg(target, f"{nick}: ❌ Contenu bloqué ou refusé par les filtres de sécurité. 🛡️")
-                    return
-
+                resp = await self._gemini.aio.models.generate_images(model=MODEL_IMAGE, prompt=prompt, config=genai_types.GenerateImagesConfig(number_of_images=1))
+                if not resp.generated_images: self.privmsg(target, f"{nick}: ❌ Bloqué."); return
                 img_bytes = resp.generated_images[0].image.image_bytes
                 name = f"img_{uuid.uuid4().hex[:10]}.png"
-                
                 await save_file_async(os.path.join(self.image_local_dir, name), img_bytes)
-                self.bot.privmsg(target, f"{nick}: ✅ {self.web_url_base.rstrip('/')}/{name}")
+                self.privmsg(target, f"{nick}: ✅ {self.web_url_base.rstrip('/')}/{name}")
+            except Exception:
+                self.privmsg(target, f"{nick}: ❌ Erreur image.")
 
-            except Exception as e:
-                # Capture les erreurs d'API (Quota, Réseau, etc.)
-                err_msg = str(e)
-                if "429" in err_msg:
-                    msg = "Quota épuisé. 📈"
-                elif "safety" in err_msg.lower():
-                    msg = "Refusé pour raisons de sécurité. 🛡️"
-                else:
-                    msg = f"Erreur : {type(e).__name__}"
-                
-                logger.error(f"Image error for {nick}: {e}")
-                self.bot.privmsg(target, f"{nick}: ❌ {msg}")
     # ====================== ROUTAGE IRC ======================
 
     @irc3.event(irc3.rfc.PRIVMSG)
     async def on_privmsg(self, mask, target, data, **kwargs):
         if not target.startswith("#"): return
         nick, message = mask.nick, data.strip()
-        
-        # Détection flexible du prefix
-        bot_prefix = self.bot.nick.lower() + ":"
-        if not message.lower().startswith(bot_prefix): return
+        prefix = self.bot.nick + ":"
+        if not message.startswith(prefix): return
 
-        cmd_raw = message[len(bot_prefix):].strip()
+        cmd_raw = message[len(prefix):].strip()
         if not cmd_raw: return
-
         parts = cmd_raw.split(maxsplit=1)
         cmd, args = parts[0].lower(), (parts[1].strip() if len(parts) > 1 else "")
         key = (target, nick)
 
-        # Cooldown & Context Access
         cooldown = URL_COOLDOWN_SECS if cmd in {"image", "video", "music", "url", "vision"} else RATE_LIMIT_SECONDS
         if not self._check_rate_limit(nick, cooldown):
-            self.bot.privmsg(target, f"{nick}: Doucement... ⏳")
+            self.privmsg(target, f"{nick}: Doucement ! ⏳"); return
+
+        if cmd == "vision":
+            m = re.search(r'(https?://\S+\.(?P<ext>png|jpg|jpeg|webp|mp4))', args, re.I)
+            if m: asyncio.create_task(self._task_vision(target, nick, m.group(1), args.replace(m.group(1), "").strip(), m.group('ext').lower()))
+            else: self.privmsg(target, f"{nick}: Lien média requis.")
             return
 
+        elif cmd == "url":
+            m = re.search(r'(https?://\S+)', args)
+            if m: asyncio.create_task(self._task_url(target, nick, m.group(1), args.replace(m.group(1), "").strip()))
+            else: self.privmsg(target, f"{nick}: URL requise.")
+            return
+
+        elif cmd in {"image", "video", "music"}:
+            if not args: self.privmsg(target, f"{nick}: Prompt requis.")
+            else:
+                task_map = {"image": self._task_image, "video": self._task_video, "music": self._task_music}
+                asyncio.create_task(task_map[cmd](target, nick, args))
+            return
+
+        elif cmd == "raz":
+            self._access_context(key).clear()
+            self.privmsg(target, f"{nick}: Mémoire effacée. ✅"); return
+
+        elif cmd == "save":
+            if not args: self.privmsg(target, f"{nick}: Titre requis."); return
+            safe_t = sanitize_title(args)
+            await save_json_async(os.path.join("conversations", f"{sanitize_nick(nick)}.{safe_t}.json"), self._access_context(key))
+            self.privmsg(target, f"{nick}: 💾 Sauvé : {safe_t}."); return
+
+        elif cmd == "load":
+            if not args: self.privmsg(target, f"{nick}: Titre requis."); return
+            path = os.path.join("conversations", f"{sanitize_nick(nick)}.{sanitize_title(args)}.json")
+            if os.path.exists(path):
+                def _l(): 
+                    with open(path, "r", encoding="utf-8") as f: return json.load(f)
+                self.user_contexts[key] = await asyncio.get_running_loop().run_in_executor(None, _l)
+                self.privmsg(target, f"{nick}: 📂 Chargé ({len(self.user_contexts[key])} msg).")
+                return  # <--- AJOUTE CETTE LIGNE ICI
+            else: self.privmsg(target, f"{nick}: Inconnu."); return
+        elif cmd == "list":
+            p = sanitize_nick(nick)
+            files = [f.replace(f"{p}.", "").replace(".json", "") for f in os.listdir("conversations") if f.startswith(p) and f.endswith(".json")]
+            self.privmsg(target, f"{nick}: 📋 {', '.join(files) if files else 'Aucune.'}"); return
+
+        elif cmd == "delete":
+            if not args: self.privmsg(target, f"{nick}: Titre requis."); return
+            path = os.path.join("conversations", f"{sanitize_nick(nick)}.{sanitize_title(args)}.json")
+            if os.path.exists(path): 
+                await asyncio.get_running_loop().run_in_executor(None, os.remove, path)
+                self.privmsg(target, f"{nick}: 🗑️ Supprimé."); return
+
+        elif cmd == "help":
+            self.privmsg(target, f"{nick}: raz|save|load|list|delete|image|video|music|vision|url"); return
+
+        # ---- CHAT ----
         async with self._get_context_lock(key):
             ctx = self._access_context(key)
+            if re.search(r'https?://\S+\.(png|jpg|jpeg|webp)', cmd_raw, re.I):
+                self.privmsg(target, f"{nick}: Utilise 'vision' pour les images."); return
+            ctx.append({"role": "user", "text": cmd_raw})
+            if len(ctx) > self.max_num_line: ctx[:] = ctx[-self.max_num_line:]
+            try:
+                resp = await self._gemini.aio.models.generate_content(model=MODEL_CHAT, contents=_ctx_to_api(ctx), config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT))
+                answer = self._clean(resp.text or "")
+                ctx.append({"role": "model", "text": answer})
+                await self.send_chunks(target, f"{nick}: {answer}")
+            except Exception as e:
+                if ctx: ctx.pop()
+                # On affiche le type d'erreur et le message court
+                err_msg = f"{type(e).__name__}: {str(e)[:100]}"
+                logger.error(f"Chat Error: {e}")
+                self.privmsg(target, f"{nick}: ❌ {err_msg}")
 
-            if cmd == "raz":
-                ctx.clear()
-                self.bot.privmsg(target, f"{nick}: Mémoire effacée. ✅")
-            
-            elif cmd == "save":
-                if not args: return
-                path = os.path.join("conversations", f"{sanitize_nick(nick)}.{sanitize_title(args)}.json")
-                await save_json_async(path, ctx)
-                self.bot.privmsg(target, f"{nick}: 💾 Sauvegardé.")
+    @irc3.event(irc3.rfc.JOIN)
+    async def on_join(self, mask, channel, **kwargs):
+        if mask.nick == self.bot.nick: logger.info(f"Rejoint {channel}")
 
-            elif cmd in {"image", "video", "music"}:
-                if not args: self.bot.privmsg(target, f"{nick}: Prompt requis.")
-                else: 
-                    task_map = {"image": self._task_image, "video": self._task_video, "music": self._task_music}
-                    asyncio.create_task(task_map[cmd](target, nick, args))
-
-            elif cmd == "help":
-                self.bot.privmsg(target, f"{nick}: raz | save [titre] | load [titre] | image | video | music | vision | url")
-
-            else:
-                # Chat textuel par défaut
-                ctx.append({"role": "user", "text": cmd_raw})
-                if len(ctx) > self.max_num_line: ctx[:] = ctx[-self.max_num_line:]
-                try:
-                    resp = await self._gemini.aio.models.generate_content(
-                        model=MODEL_CHAT, contents=_ctx_to_api(ctx),
-                        config=genai_types.GenerateContentConfig(system_instruction=IRC_SYSTEM_PROMPT)
-                    )
-                    answer = self._clean(resp.text)
-                    ctx.append({"role": "model", "text": answer})
-                    await self.send_chunks(target, f"{nick}: {answer}")
-                except Exception as e:
-                    if ctx: ctx.pop()
-                    self.bot.privmsg(target, f"{nick}: ❌ Erreur API.")
-
-
+ 
 # ====================== POINT D'ENTRÉE ======================
 
 def main():
