@@ -72,7 +72,7 @@ INSTALLATION
 1. Clone the repository.
 2. Install dependencies: pip install irc3 google-genai pylatexenc httpx
 3. Configure 'config.json' with your Gemini API Key and local directories.
-4. Run: python test.py config.json
+4. Run: python gemini.py config.json
 
 LICENSE
 -------
