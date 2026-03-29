@@ -245,26 +245,53 @@ class ZozoPlugin:
             self.privmsg(target, f"{nick}: ❌ Erreur analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
+        """Génération vidéo avec Veo 3.1"""
         async with self._heavy_semaphore:
-            self.privmsg(target, f"{nick}: Génération vidéo Veo... ⏳")
+            self.privmsg(target, f"{nick}: Génération vidéo Veo en cours... ⏳ (cela peut prendre 30 à 90 secondes)")
+            t0 = time.monotonic()
+
             try:
+                # Lancement asynchrone
                 operation = await self._gemini.aio.models.generate_videos(
-                    model=MODEL_VEO, prompt=f"{prompt}, 4s, vertical 9:16",
-                    config=genai_types.GenerateVideosConfig(duration_seconds=4, aspect_ratio="9:16"),
+                    model=MODEL_VEO,
+                    prompt=f"{prompt}, 4 secondes, format vertical 9:16, animation fluide et réaliste",
+                    config=genai_types.GenerateVideosConfig(
+                        duration_seconds=4,
+                        aspect_ratio="9:16"
+                    ),
                 )
+
+                # Polling avec timeout
                 while not operation.done:
-                    await asyncio.sleep(15)
+                    if time.monotonic() - t0 > 600:  # 10 minutes max
+                        self.privmsg(target, f"{nick}: ❌ Timeout Veo (10 minutes).")
+                        return
+                    await asyncio.sleep(12)   # 12s est un bon compromis
                     operation = await self._gemini.aio.operations.get(operation)
 
+                # Vérification erreur
                 if operation.error or not operation.response.generated_videos:
-                    err = getattr(operation.error, 'message', "Filtre de sécurité")
-                    self.privmsg(target, f"{nick}: ❌ Erreur : {err}"); return
+                    err = getattr(operation.error, 'message', 'Filtre de sécurité ou erreur inconnue')
+                    self.privmsg(target, f"{nick}: ❌ {err}")
+                    return
 
-                vid_bytes = await self._gemini.aio.files.download(file=operation.response.generated_videos[0].video)
+                # Téléchargement et sauvegarde
+                vid_bytes = await self._gemini.aio.files.download(
+                    file=operation.response.generated_videos[0].video
+                )
+
                 name = f"vid_{uuid.uuid4().hex[:12]}.mp4"
                 await save_file_async(os.path.join(self.video_local_dir, name), vid_bytes)
-                self.privmsg(target, f"{nick}: ✅ {self.video_public_url.rstrip('/')}/{name}")
+
+                elapsed = time.monotonic() - t0
+                url = f"{self.video_public_url.rstrip('/')}/{name}"
+                
+                logger.info(f"Vidéo générée en {elapsed:.1f}s pour {nick} → {name}")
+                self.privmsg(target, f"{nick}: ✅ {url}")
+
             except Exception as e:
+                logger.error(f"Video error for {nick} (prompt: {prompt[:80]}...): {e}", exc_info=True)
+                self.privmsg(target, f"{nick}: ❌ Erreur lors de la génération vidéo.")
                 self.privmsg(target, f"{nick}: ❌ Erreur : {type(e).__name__}")
 
     async def _task_image(self, target: str, nick: str, prompt: str):
