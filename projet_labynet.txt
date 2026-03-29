@@ -1,0 +1,61 @@
+# 🎙️ PROJET RADIO LABYNET : L'HYPER-RADIO IA (MANIFESTE)
+# Date de conception : Mars 2026
+# Statut : Conception validée / En attente d'infrastructure
+
+=======================================================================
+1. VISION GLOBALE
+=======================================================================
+Transformer la radio Labynet (https://labynet.fr) en une entité 
+"chaud bouillant". Passer d'un streaming statique à une expérience 
+IA anthropomorphique, interactive et visuelle.
+
+Principe d'or : "Réfléchir d'abord, coder ensuite."
+
+=======================================================================
+2. ARCHITECTURE TECHNIQUE (LE SQUELETTE)
+=======================================================================
+Le système repose sur une liaison directe IP-à-IP entre deux pôles :
+
+A. LE CERVEAU (VPS IONOS)
+   - Specs : 8 vCores / 16 Go RAM / 480 Go SSD.
+   - Rôle : Intelligence Locale (Ollama), Logique Python, Base SQL.
+   - Fonction : Analyse les données, génère les textes, gère le RSS.
+
+B. LES MUSCLES (MACBOOK PRO)
+   - Specs : Station de diffusion locale à Paris.
+   - Rôle : AppleScript, Music.app, moteur de voix 'say'.
+   - Fonction : Exécution physique du son et de la parole.
+
+C. LE CORDON OMBILICAL (SSH DIRECT)
+   - Connexion : IP Fixe Publique (Maison) <-> IP Fixe (VPS).
+   - Sécurité : Firewall (pf) restrictif acceptant uniquement l'IP du VPS.
+   - Avantage : Pilotage direct du volume et de la voix sans latence IRC.
+
+=======================================================================
+3. LES COMPOSANTS "CHAUD BOUILLANT"
+=======================================================================
+
+* ZOZO (L'IA ANTHROPOMORPHIQUE) : 
+  Une IA qui assume sa nature de machine. Elle utilise le WIKI SQL
+  pour enrichir ses interventions sans tomber dans la caricature.
+
+* MULTI-VOIX (CASTING MACOS) :
+  Utilisation des différentes voix système pour segmenter l'antenne :
+  - Voix A : Animation / DJ (Bio des artistes).
+  - Voix B : Flash Info (Synthèse RSS toutes les heures).
+  - Voix C : Technique / Système (Interaction chat).
+
+* IMMERSION VISUELLE (THE LOUNGE) :
+  Pousser les images (pochettes, photos du Wiki) directement dans 
+  le client IRC via des URLs générées depuis le SQL du VPS.
+
+=======================================================================
+4. FEUILLE DE ROUTE (ESTIMATION : 6 MOIS)
+=======================================================================
+- MOIS 1-2 : Setup Infrastructure & Tunnel SSH (Télécommande du Mac).
+- MOIS 3-4 : Intégration Intelligence & Wiki SQL (Contexte Ollama).
+- MOIS 5-6 : Automatisation (Flux RSS) & Habillage sonore/visuel final.
+
+=======================================================================
+"L'intelligence ne simule pas l'humain, elle augmente la radio."
+=======================================================================
