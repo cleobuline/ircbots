@@ -291,7 +291,6 @@ class ZozoPlugin:
 
             except Exception as e:
                 logger.error(f"Video error for {nick} (prompt: {prompt[:80]}...): {e}", exc_info=True)
-                self.privmsg(target, f"{nick}: ❌ Erreur lors de la génération vidéo.")
                 self.privmsg(target, f"{nick}: ❌ Erreur : {type(e).__name__}")
 
     async def _task_image(self, target: str, nick: str, prompt: str):
@@ -402,7 +401,12 @@ class ZozoPlugin:
     @irc3.event(irc3.rfc.JOIN)
     async def on_join(self, mask, channel, **kwargs):
         if mask.nick == self.bot.nick: logger.info(f"Rejoint {channel}")
-
+    @irc3.event(irc3.rfc.KICK)
+    async def on_kick(self, mask, channel, target, **kwargs):
+        if target == self.bot.nick:
+            logger.info(f"Expulsé de {channel}, tentative de retour dans 5s...")
+            await asyncio.sleep(5)
+            self.bot.join(channel)
  
 # ====================== POINT D'ENTRÉE ======================
 
