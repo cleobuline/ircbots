@@ -1,0 +1,49 @@
+==========================================================
+FICHE MÉMO : INSTALLATION IA LOCALE (VPS 16GB / 8 CORES)
+==========================================================
+
+1. INSTALLATION RAPIDE (Ollama)
+----------------------------------------------------------
+# Commande d'installation automatique sur Linux :
+curl -fsSL https://ollama.com/install.sh | sh
+
+2. LES 3 MEILLEURS MODÈLES POUR 16 GO DE RAM (MARCH 2026)
+----------------------------------------------------------
+Ces modèles sont choisis en version "12B/14B parameters" 
+car ils occupent environ 8-10 Go de RAM, laissant 6 Go 
+de marge pour ton système et tes bots IRC.
+
+A. LE PLUS ÉQUILIBRÉ : Qwen 3 (14B)
+   - Pourquoi : Actuellement le meilleur rapport intelligence/poids. 
+   - Points forts : Très logique, excellent en code et français.
+   - Commande : ollama run qwen3:14b
+
+B. LE PLUS "FRANÇAIS" : Mistral 3 / Ministral (14B)
+   - Pourquoi : Optimisé par Mistral AI (cocorico). 
+   - Points forts : Nuances de langage, culture européenne, stable.
+   - Commande : ollama run mistral:14b
+
+C. LE PLUS LOGIQUE : DeepSeek-R1-Distill-Llama (14B)
+   - Pourquoi : C'est le modèle qui "réfléchit" (Chain of Thought).
+   - Points forts : Pour les débats de fond, ne se trompe jamais.
+   - Commande : ollama run deepseek-r1:14b
+
+* BONUS (Vitesse pure) : Llama 4 (12B)
+   - Commande : ollama run llama4:12b
+
+3. CONFIGURATION POUR TES 8 CŒURS
+----------------------------------------------------------
+Pour que le bot ne sature pas tout le serveur, tu peux 
+limiter Ollama à utiliser 6 ou 7 cœurs (via les variables 
+d'environnement) pour laisser un cœur libre pour l'IRC.
+
+4. ACCÈS API POUR TES BOTS IRC
+----------------------------------------------------------
+Ton script Python pourra taper sur cette URL locale :
+URL : http://localhost:11434/v1/chat/completions
+Format : Identique à OpenAI (donc ton format universel !)
+
+==========================================================
+Note : Avec 480 Go de SSD, tu peux installer TOUS ces 
+modèles et basculer de l'un à l'autre en 2 secondes.
+==========================================================
