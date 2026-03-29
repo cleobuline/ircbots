@@ -15,14 +15,15 @@ import random
 import subprocess
 import os 
 import json 
+import feedparser
 from skyfield.api import load, Topos, utc
 from skyfield import almanac
 
 class YouTubeBot(irc.bot.SingleServerIRCBot):
     def __init__(self):
-        self.server = "87.98.149.75"
+        self.server = "labynet.fr"
         self.port = 6667
-        self.channel = "#zone-libre"
+        self.channel = "#labynet"
         self.nickname = "rosalie"
         self.realname = "rosalie Bot"
         self.username = "rosalie"
@@ -43,7 +44,15 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             "verseau": "verseau", "aquarius": "verseau",
             "poissons": "poissons", "pisces": "poissons",
         }
-
+        self.rss_feeds = {
+            "afp": "https://www.lepoint.fr/24h-infos/rss.xml", # Très stable pour l'AFP
+            "monde": "https://www.lemonde.fr/rss/une.xml",
+            "iran": "https://www.rfi.fr/fr/moyen-orient/rss",
+            "tech": "https://www.clubic.com/feed/news.rss", # Validé par ton test !
+            "science": "https://www.sciencesetavenir.fr/rss.xml",
+            "sport": "https://www.sport.fr/feed/",
+            "actu": "https://www.lefigaro.fr/rss/figaro_actualites.xml" # Plus permissif
+        }
         try:
             with open("rosalie.json", "r") as f:
                 config = json.load(f)
@@ -75,6 +84,80 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
     def on_error(self, connection, event):
         print(f"Erreur détectée : {event}. Tentative de reconnexion...")
         self.reconnect(connection)
+    def calculate_distance(self, loc1, loc2, connection):
+        try:
+            geolocator = Nominatim(user_agent="distance_calculator")
+            data1 = geolocator.geocode(loc1)
+            data2 = geolocator.geocode(loc2)
+
+            if not data1 or not data2:
+                connection.privmsg(self.channel, "Impossible de localiser l'une des deux villes. Vérifie l'orthographe !")
+                return
+
+            # Coordonnées en radians
+            lat1, lon1 = math.radians(data1.latitude), math.radians(data1.longitude)
+            lat2, lon2 = math.radians(data2.latitude), math.radians(data2.longitude)
+
+            # Formule de Haversine
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            distance = 6371 * c  # Rayon moyen de la Terre en km
+
+            connection.privmsg(self.channel, f"📏 Distance à vol d'oiseau entre {loc1} et {loc2} : {distance:.2f} km.")
+            
+        except Exception as e:
+            connection.privmsg(self.channel, f"Erreur de calcul de distance : {e}")
+            
+    def get_rss(self, connection, theme):
+        import feedparser
+        import requests
+        theme = theme.lower().strip()
+        if not theme: theme = "afp"
+        
+        url = self.rss_feeds.get(theme, self.rss_feeds["afp"])
+        
+        try:
+            # On utilise une session pour simuler un vrai navigateur
+            session = requests.Session()
+            headers = {
+                'User-Agent': self.user_agent,
+                'Accept': 'application/xml,application/xhtml+xml,text/xml;q=0.9',
+                'Accept-Language': 'fr,fr-FR;q=0.9,en;q=0.8'
+            }
+            
+            response = session.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # On analyse le texte brut
+            feed = feedparser.parse(response.text)
+            
+            if not feed.entries:
+                # Si ça échoue encore, on tente le fallback sur Le Monde qui marche à coup sûr
+                response = session.get(self.rss_feeds["monde"], headers=headers, timeout=10)
+                feed = feedparser.parse(response.text)
+                theme = "monde (secours)"
+
+            if not feed.entries:
+                connection.privmsg(self.channel, f"Impossible d'accéder aux flux (Protection anti-bot).")
+                return
+
+            connection.privmsg(self.channel, f"📰 [{theme.upper()}] Dernières dépêches :")
+            
+            for entry in feed.entries[:3]:
+                # Nettoyage et envoi par chunks (déjà géré dans Rosalie)
+                title = re.sub('<[^<]+?>', '', entry.title).replace('\n', ' ').strip()
+                link = getattr(entry, 'link', 'Pas de lien')
+                
+                # On utilise ta méthode de chunks pour éviter les coupures
+                self.send_message_in_chunks(connection, self.channel, f"• {title} - {link}")
+                time.sleep(1)
+                
+        except Exception as e:
+            print(f"Erreur RSS fatale: {e}")
+            connection.privmsg(self.channel, "Désolé, les serveurs de presse bloquent ma connexion.")
+            
     
     def get_moon_phase(self):
         ts = load.timescale()
@@ -355,6 +438,14 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
             elif message.startswith('!geo'):
                 location = message.split('!geo', 1)[1].strip()
                 self.get_geo_location(location, connection)
+            elif message.startswith('!distance'):
+                # On utilise split() sans argument pour ignorer tous les espaces multiples
+                parts = message.split()
+                if len(parts) < 3:
+                    connection.privmsg(self.channel, "Usage: !distance <ville1> <ville2>")
+                else:
+                    # On prend les éléments index 1 et 2
+                    self.calculate_distance(parts[1], parts[2], connection)
             elif message.startswith('!help'):
                 self.send_help_message(connection)
             elif message.startswith('!dico'):
@@ -382,7 +473,9 @@ class YouTubeBot(irc.bot.SingleServerIRCBot):
                     "cos(x),sin(x),tan(x),acos(x),asin(x),atan(x),log(x),log10(x),log2(x),sqrt(x),"
                     "exp(x),pow(x,y),fact(x),deg(x),rad(x),pi,e,tau,ceil(x),floor(x),fabs(x),"
                     "gcd(x,y),isqrt(x),hypot(x,y)")
-
+            elif message.startswith('!rss'):
+                query = message.split('!rss', 1)[1].strip() if len(message.split('!rss')) > 1 else ""
+                self.get_rss(connection, query)
         except Exception as e:
             print(f"Error in on_pubmsg: {e}")
             connection.privmsg(self.channel, f"Une erreur est apparue. {str(e)}")
