@@ -199,6 +199,7 @@ class ZozoPlugin:
         # SUPPRIME la ligne ci-dessous ou modifie-la comme ceci :
         return text.strip()
 
+
     # ====================== TÂCHES ASYNC ======================
 
     async def _task_music(self, target: str, nick: str, prompt: str):
@@ -206,19 +207,43 @@ class ZozoPlugin:
             self.privmsg(target, f"{nick}: Composition musicale (Lyria 3) en cours... 🎹")
             try:
                 resp = await self._gemini.aio.models.generate_content(
-                    model=MODEL_MUSIC, contents=prompt,
-                    config=genai_types.GenerateContentConfig(response_modalities=["AUDIO", "TEXT"]),
+                    model=MODEL_MUSIC,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(response_modalities=["AUDIO"])
                 )
-                audio_bytes = next((p.inline_data.data for p in resp.candidates[0].content.parts if hasattr(p, 'inline_data') and p.inline_data), None)
+                
+                audio_bytes = None
+                # Exploration profonde pour trouver l'audio
+                if resp.candidates and resp.candidates[0].content.parts:
+                    for part in resp.candidates[0].content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            audio_bytes = part.inline_data.data
+                            break
+                        elif hasattr(part, 'data') and part.data:
+                            audio_bytes = part.data
+                            break
+
                 if audio_bytes:
                     name = f"snd_{uuid.uuid4().hex[:10]}.mp3"
-                    await save_file_async(os.path.join(self.audio_local_dir, name), audio_bytes)
-                    self.privmsg(target, f"{nick}: ✅ {self.audio_public_url.rstrip('/')}/{name}")
+                    file_path = os.path.join(self.audio_local_dir, name)
+                    await save_file_async(file_path, audio_bytes)
+                    
+                    url = f"{self.audio_public_url.rstrip('/')}/{name}"
+                    self.privmsg(target, f"{nick}: ✅ Musique prête : {url}")
                 else:
-                    self.privmsg(target, f"{nick}: ❌ Aucun flux audio généré.")
+                    # Extraction de la raison précise de l'échec
+                    reason = "Inconnue"
+                    if resp.candidates:
+                        # Vérifie si c'est un blocage de sécurité (SAFETY) ou autre
+                        reason = resp.candidates[0].finish_reason or "Contenu filtré"
+                    
+                    self.privmsg(target, f"{nick}: ❌ Flux audio vide. Raison : {reason}")
+                    logger.warning(f"Échec Lyria pour {nick}. Prompt: {prompt} | Raison: {reason}")
+                    
             except Exception as e:
+                logger.error(f"Music Error: {e}")
                 self.privmsg(target, f"{nick}: ❌ Erreur technique : {type(e).__name__}")
-
+                                
     async def _task_url(self, target: str, nick: str, url: str, prompt: str):
         async with self._heavy_semaphore:
             self.privmsg(target, f"{nick}: Exploration de la page... 🌐")
