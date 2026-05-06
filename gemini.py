@@ -245,52 +245,26 @@ class ZozoPlugin:
             self.privmsg(target, f"{nick}: ❌ Erreur analyse média.")
 
     async def _task_video(self, target: str, nick: str, prompt: str):
-        """Génération vidéo avec Veo 3.1"""
         async with self._heavy_semaphore:
-            self.privmsg(target, f"{nick}: Génération vidéo Veo en cours... ⏳ (cela peut prendre 30 à 90 secondes)")
-            t0 = time.monotonic()
-
+            self.privmsg(target, f"{nick}: Génération vidéo Veo... ⏳")
             try:
-                # Lancement asynchrone
                 operation = await self._gemini.aio.models.generate_videos(
-                    model=MODEL_VEO,
-                    prompt=f"{prompt}, 4 secondes, format vertical 9:16, animation fluide et réaliste",
-                    config=genai_types.GenerateVideosConfig(
-                        duration_seconds=4,
-                        aspect_ratio="9:16"
-                    ),
+                    model=MODEL_VEO, prompt=f"{prompt}, 4s, vertical 9:16",
+                    config=genai_types.GenerateVideosConfig(duration_seconds=4, aspect_ratio="9:16"),
                 )
-
-                # Polling avec timeout
                 while not operation.done:
-                    if time.monotonic() - t0 > 600:  # 10 minutes max
-                        self.privmsg(target, f"{nick}: ❌ Timeout Veo (10 minutes).")
-                        return
-                    await asyncio.sleep(12)   # 12s est un bon compromis
+                    await asyncio.sleep(15)
                     operation = await self._gemini.aio.operations.get(operation)
 
-                # Vérification erreur
                 if operation.error or not operation.response.generated_videos:
-                    err = getattr(operation.error, 'message', 'Filtre de sécurité ou erreur inconnue')
-                    self.privmsg(target, f"{nick}: ❌ {err}")
-                    return
+                    err = getattr(operation.error, 'message', "Filtre de sécurité")
+                    self.privmsg(target, f"{nick}: ❌ Erreur : {err}"); return
 
-                # Téléchargement et sauvegarde
-                vid_bytes = await self._gemini.aio.files.download(
-                    file=operation.response.generated_videos[0].video
-                )
-
+                vid_bytes = await self._gemini.aio.files.download(file=operation.response.generated_videos[0].video)
                 name = f"vid_{uuid.uuid4().hex[:12]}.mp4"
                 await save_file_async(os.path.join(self.video_local_dir, name), vid_bytes)
-
-                elapsed = time.monotonic() - t0
-                url = f"{self.video_public_url.rstrip('/')}/{name}"
-                
-                logger.info(f"Vidéo générée en {elapsed:.1f}s pour {nick} → {name}")
-                self.privmsg(target, f"{nick}: ✅ {url}")
-
+                self.privmsg(target, f"{nick}: ✅ {self.video_public_url.rstrip('/')}/{name}")
             except Exception as e:
-                logger.error(f"Video error for {nick} (prompt: {prompt[:80]}...): {e}", exc_info=True)
                 self.privmsg(target, f"{nick}: ❌ Erreur : {type(e).__name__}")
 
     async def _task_image(self, target: str, nick: str, prompt: str):
@@ -401,12 +375,7 @@ class ZozoPlugin:
     @irc3.event(irc3.rfc.JOIN)
     async def on_join(self, mask, channel, **kwargs):
         if mask.nick == self.bot.nick: logger.info(f"Rejoint {channel}")
-    @irc3.event(irc3.rfc.KICK)
-    async def on_kick(self, mask, channel, target, **kwargs):
-        if target == self.bot.nick:
-            logger.info(f"Expulsé de {channel}, tentative de retour dans 5s...")
-            await asyncio.sleep(5)
-            self.bot.join(channel)
+
  
 # ====================== POINT D'ENTRÉE ======================
 
