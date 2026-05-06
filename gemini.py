@@ -144,18 +144,45 @@ class ZozoPlugin:
     def privmsg(self, target: str, text: str):
         self.bot.privmsg(target, str(text)[:400])
 
-    async def send_chunks(self, target: str, text: str):
-        text = text.replace('\n', ' ').replace('\r', '')
-        limit = 400
-        while text:
-            if len(text) <= limit:
-                self.privmsg(target, text)
-                break
-            chunk_limit = text.rfind(' ', 0, limit)
-            if chunk_limit <= 0: chunk_limit = limit
-            self.privmsg(target, text[:chunk_limit].strip())
-            text = text[chunk_limit:].strip()
-            await asyncio.sleep(self.flood_delay)
+    async def send_chunks(self, target: str, message: str):
+        """Découpe le message en respectant les sauts de ligne et l'encodage UTF-8."""
+        if not message:
+            return
+            
+        MAX_BYTES = 392
+        
+        # On traite chaque ligne séparément pour respecter la structure originale
+        for line in message.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            remaining = line.encode('utf-8')
+            
+            while remaining:
+                if len(remaining) <= MAX_BYTES:
+                    self.privmsg(target, remaining.decode('utf-8', errors='replace'))
+                    break
+                
+                # On recule jusqu'à trouver une frontière de caractère UTF-8 valide[cite: 2]
+                cut = MAX_BYTES
+                while cut > 0 and (remaining[cut] & 0xC0) == 0x80:
+                    cut -= 1
+                
+                # On tente de couper sur le dernier espace disponible dans le bloc[cite: 2]
+                chunk_bytes = remaining[:cut]
+                last_space = chunk_bytes.rfind(b' ')
+                
+                if last_space > 5:
+                    to_send = chunk_bytes[:last_space]
+                    # On retire l'espace utilisé pour la coupe du reste à envoyer[cite: 2]
+                    remaining = remaining[last_space:].lstrip(b' ')
+                else:
+                    to_send = chunk_bytes
+                    remaining = remaining[cut:]
+                
+                self.privmsg(target, to_send.decode('utf-8', errors='replace'))
+                await asyncio.sleep(self.flood_delay)
 
     def _extract_text(self, html: str) -> str:
         text = RE_HTML_CLEAN.sub('', html)
@@ -169,7 +196,8 @@ class ZozoPlugin:
         text = RE_MARKDOWN_TITLES.sub('', text)
         text = RE_MARKDOWN_UNDERLINE.sub(r'\1', text)
         text = RE_MARKDOWN_CODE.sub('', text)
-        return text.replace('\n', ' ').strip()
+        # SUPPRIME la ligne ci-dessous ou modifie-la comme ceci :
+        return text.strip()
 
     # ====================== TÂCHES ASYNC ======================
 
